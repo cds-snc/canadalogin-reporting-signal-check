@@ -1,5 +1,5 @@
 ---
-title: "CanadaLogin Week in Review - Inspection Workbook"
+title: "CanadaLogin Fortnightly Review - Inspection Workbook"
 subtitle: "Internal use only. Not a polished report."
 format:
   html:
@@ -32,32 +32,34 @@ relying_parties <- load_relying_parties()
 internal_apps <- relying_parties$application_name[relying_parties$is_internal]
 ```
 
-## Resolve the reporting week
+## Resolve the reporting period (two weeks)
 
-Most recent complete Monday-Sunday week that actually has sign-in data.
+Most recent complete two-week (Monday-Sunday) block that actually has sign-in
+data. Graphs still plot weekly data points; this widens the period filters.
 
-```{r resolve-week}
+```{r resolve-period}
 max_data_date <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
   summarise(m = max(from_date, na.rm = TRUE)) |>
   pull(m) |>
   as.Date()
 
-# Latest complete week: its Sunday is the last data day if that day is a Sunday,
-# otherwise the Sunday before the data's own week.
+# Period end is the most recent complete Sunday: the last data day if that day is
+# a Sunday, otherwise the Sunday before the data's own week. The period spans the
+# two Mon-Sun weeks ending on it, so its start is 13 days earlier (a Monday).
 if (as.integer(format(max_data_date, "%u")) == 7L) {
-  week_end <- max_data_date
+  period_end <- max_data_date
 } else {
-  week_end <- monday_of(max_data_date) - 1L
+  period_end <- monday_of(max_data_date) - 1L
 }
-week_start <- week_end - 6L
+period_start <- period_end - 13L
 
-default_sunday <- monday_of(Sys.Date()) - 1L
+default_period_end <- monday_of(Sys.Date()) - 1L
 
-cat("Resolved reporting week:", format(week_start), "to", format(week_end), "\n")
+cat("Resolved reporting period:", format(period_start), "to", format(period_end), "\n")
 cat("Max date with data:", format(max_data_date), "\n")
-if (week_end < default_sunday) {
-  cat("WARNING: warehouse appears to lag - resolved week is earlier than the",
-      "default 'past Monday through most recent Sunday' rule.\n")
+if (period_end < default_period_end) {
+  cat("WARNING: warehouse appears to lag - resolved period ends earlier than the",
+      "default two weeks through the most recent Sunday.\n")
 }
 ```
 
@@ -65,7 +67,7 @@ if (week_end < default_sunday) {
 
 ```{r anomalies}
 auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
-  filter(from_date >= as.Date(launch_week_start), from_date <= as.Date(week_end)) |>
+  filter(from_date >= as.Date(launch_week_start), from_date <= as.Date(period_end)) |>
   transmute(
     day = as.Date(from_date),
     unique_users = as.double(unique_users),
@@ -78,14 +80,14 @@ auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
 
 # Check from the actual launch date, not the launch week's Monday: Apr 20-21 are
 # legitimately empty (pre-launch) and would otherwise flag as missing every week.
-expected_days <- seq(as.Date(launch_date), as.Date(week_end), by = "day")
+expected_days <- seq(as.Date(launch_date), as.Date(period_end), by = "day")
 cat("Missing days in auth feed since launch:\n")
 print(expected_days[!expected_days %in% auth_daily$day])
 cat("\nDays with zero successful logins:\n")
 print(auth_daily$day[auth_daily$successful_logins == 0])
 ```
 
-## New relying parties (onboarding this week)
+## New relying parties (onboarding this period)
 
 ```{r new-rps}
 tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
@@ -93,7 +95,7 @@ tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
   collect() |>
   mutate(first_seen = as.Date(first_seen)) |>
-  filter(first_seen >= as.Date(week_start), first_seen <= as.Date(week_end)) |>
+  filter(first_seen >= as.Date(period_start), first_seen <= as.Date(period_end)) |>
   left_join(relying_parties, by = "application_name") |>
   arrange(first_seen)
 ```
@@ -142,7 +144,7 @@ auth_daily |>
   arrange(week_start)
 ```
 
-## Adoption breadth: sign-ins by public application (reporting week)
+## Adoption breadth: sign-ins by public application (reporting period)
 
 Internal/system apps (per the registry) excluded so the view reflects genuine
 public adoption; joined to the registry for operator.
@@ -150,8 +152,8 @@ public adoption; joined to the registry for operator.
 ```{r sign-ins-by-app}
 tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   filter(
-    from_date >= as.Date(week_start),
-    from_date <= as.Date(week_end),
+    from_date >= as.Date(period_start),
+    from_date <= as.Date(period_end),
     !application_name %in% internal_apps
   ) |>
   group_by(application_name) |>
@@ -178,15 +180,15 @@ overall_unique_users <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |
 sum_app_unique_users / as.double(overall_unique_users)
 ```
 
-## MFA factor mix and success (reporting week)
+## MFA factor mix and success (reporting period)
 
 "sent" rows dropped: success rate is computed from outcome events only.
 
 ```{r mfa}
 tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
   filter(
-    from_date >= as.Date(week_start),
-    from_date <= as.Date(week_end),
+    from_date >= as.Date(period_start),
+    from_date <= as.Date(period_end),
     result %in% c("success", "failure")
   ) |>
   group_by(mfa_type, result) |>
@@ -200,7 +202,7 @@ tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
   arrange(desc(total))
 ```
 
-## Call centre (reporting week)
+## Call centre (reporting period)
 
 Test calls separated out; volumes are tiny, so prefer counts over rates.
 
@@ -214,7 +216,7 @@ tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
     date_range_start = as.Date(date_range_start),
     date_range_end = as.Date(date_range_end)
   ) |>
-  filter(date_range_start >= week_start, date_range_end <= week_end) |>
+  filter(date_range_start >= period_start, date_range_end <= period_end) |>
   transmute(
     date_range_start,
     date_range_end,
@@ -228,7 +230,7 @@ tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
 # date column compares cleanly (date >= date) while the string `date` mirror
 # would raise a varchar-vs-date mismatch.
 tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
-  filter(call_date >= as.Date(week_start), call_date <= as.Date(week_end)) |>
+  filter(call_date >= as.Date(period_start), call_date <= as.Date(period_end)) |>
   mutate(call_topic = str_squish(statobject)) |>
   count(call_topic, name = "topic_count") |>
   collect() |>

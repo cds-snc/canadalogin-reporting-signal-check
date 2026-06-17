@@ -1,9 +1,9 @@
-#' Athena connection and shared setup for the CanadaLogin Week in Review.
+#' Athena connection and shared setup for the CanadaLogin Fortnightly Review.
 #'
 #' This file holds ONLY non-analytical setup: the connection factory, a package
 #' check, pure date helpers, and constants for inspect.qmd. The data queries
 #' themselves are deliberately NOT here - they are written inline in inspect.qmd
-#' and repeated verbatim in each weekly report, so every report freezes the exact
+#' and repeated verbatim in each report, so every report freezes the exact
 #' query that produced its numbers.
 #'
 #' Configuration comes from a gitignored .env at the project root.
