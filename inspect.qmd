@@ -1,0 +1,237 @@
+---
+title: "CanadaLogin Week in Review - Inspection Workbook"
+subtitle: "Internal use only. Not a polished report."
+format:
+  html:
+    embed-resources: true
+    toc: true
+    code-fold: true
+execute:
+  warning: true
+  message: true
+---
+
+Use this workbook to keep track of queries that produce interesting metrics. If you
+find something interesting, keep it in this workbook for next time. Don't remove queries
+unless they no longer work or they're misleading / broken.
+
+```{r setup}
+source("R/connection.R")
+source("colours.R")
+library(dplyr)
+library(dbplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+con <- connect_athena()
+```
+
+## Resolve the reporting week
+
+Most recent complete Monday-Sunday week that actually has sign-in data.
+
+```{r resolve-week}
+max_data_date <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  summarise(m = max(from_date, na.rm = TRUE)) |>
+  pull(m) |>
+  as.Date()
+
+# Latest complete week: its Sunday is the last data day if that day is a Sunday,
+# otherwise the Sunday before the data's own week.
+if (as.integer(format(max_data_date, "%u")) == 7L) {
+  week_end <- max_data_date
+} else {
+  week_end <- monday_of(max_data_date) - 1L
+}
+week_start <- week_end - 6L
+
+default_sunday <- monday_of(Sys.Date()) - 1L
+
+cat("Resolved reporting week:", format(week_start), "to", format(week_end), "\n")
+cat("Max date with data:", format(max_data_date), "\n")
+if (week_end < default_sunday) {
+  cat("WARNING: warehouse appears to lag - resolved week is earlier than the",
+      "default 'past Monday through most recent Sunday' rule.\n")
+}
+```
+
+## Anomaly panel
+
+```{r anomalies}
+auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  filter(from_date >= as.Date(launch_week_start), from_date <= as.Date(week_end)) |>
+  transmute(
+    day = as.Date(from_date),
+    unique_users = as.double(unique_users),
+    successful_logins = as.double(successful_logins),
+    failed_logins = as.double(failed_logins),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  arrange(day)
+
+# Check from the actual launch date, not the launch week's Monday: Apr 20-21 are
+# legitimately empty (pre-launch) and would otherwise flag as missing every week.
+expected_days <- seq(as.Date(launch_date), as.Date(week_end), by = "day")
+cat("Missing days in auth feed since launch:\n")
+print(expected_days[!expected_days %in% auth_daily$day])
+cat("\nDays with zero successful logins:\n")
+print(auth_daily$day[auth_daily$successful_logins == 0])
+```
+
+## New relying parties (onboarding this week)
+
+```{r new-rps}
+tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  group_by(application_name) |>
+  summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(first_seen = as.Date(first_seen)) |>
+  filter(first_seen >= as.Date(week_start), first_seen <= as.Date(week_end)) |>
+  arrange(first_seen)
+```
+
+## Headline: YTD unique users (cumulative reach since launch)
+
+The cumulative ytd column is monotonic within a week, so the week's value is its
+max. (Daily `unique_users` counts user-days and must not be summed.)
+
+```{r headline}
+ytd <- auth_daily |>
+  mutate(week_start = monday_of(day)) |>
+  group_by(week_start) |>
+  summarise(ytd_unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  arrange(week_start)
+
+print(ytd)
+
+ggplot(ytd, aes(week_start, ytd_unique_users)) +
+  geom_line(color = colors$canada) +
+  geom_point(
+    data = subset(ytd, week_start == week_start[length(week_start)]),
+    color = colors$highlight[1], size = 3
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_bw() +
+  labs(x = NULL, y = "YTD unique users", title = "YTD unique users since launch")
+```
+
+## Sign-in success rate (weekly)
+
+```{r success-rate}
+auth_daily |>
+  mutate(week_start = monday_of(day)) |>
+  group_by(week_start) |>
+  summarise(
+    successful_logins = sum(successful_logins, na.rm = TRUE),
+    failed_logins = sum(failed_logins, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(success_rate = successful_logins / (successful_logins + failed_logins)) |>
+  arrange(week_start)
+```
+
+## Adoption breadth: sign-ins by public application (reporting week)
+
+Internal/system apps excluded so the view reflects genuine public adoption.
+
+```{r sign-ins-by-app}
+internal_apps <- c(
+  "Flow Application",
+  "GCS Migration Solution",
+  "GC Sign In - Profile Management App"
+)
+
+tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    from_date >= as.Date(week_start),
+    from_date <= as.Date(week_end),
+    !application_name %in% internal_apps
+  ) |>
+  group_by(application_name) |>
+  summarise(total_logins = sum(as.double(total_logins), na.rm = TRUE), .groups = "drop") |>
+  arrange(desc(total_logins)) |>
+  collect()
+```
+
+## Applications per credential (cross-service reach, latest snapshot)
+
+```{r apps-per-credential}
+sum_app_unique_users <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  group_by(application_name) |>
+  slice_max(from_date, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  summarise(s = sum(as.double(ytd_unique_users), na.rm = TRUE)) |>
+  pull(s)
+
+overall_unique_users <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  slice_max(from_date, n = 1, with_ties = FALSE) |>
+  pull(ytd_unique_users)
+
+sum_app_unique_users / as.double(overall_unique_users)
+```
+
+## MFA factor mix and success (reporting week)
+
+"sent" rows dropped: success rate is computed from outcome events only.
+
+```{r mfa}
+tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(week_start),
+    from_date <= as.Date(week_end),
+    result %in% c("success", "failure")
+  ) |>
+  group_by(mfa_type, result) |>
+  summarise(count = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  pivot_wider(names_from = result, values_from = count, values_fill = 0) |>
+  mutate(
+    total = success + failure,
+    success_rate = if_else(total > 0, success / total, NA_real_)
+  ) |>
+  arrange(desc(total))
+```
+
+## Call centre (reporting week)
+
+Test calls separated out; volumes are tiny, so prefer counts over rates.
+
+```{r call-centre}
+# weekly_activity_report stores its date columns as strings (catalog: "cast to
+# DATE when filtering"). It is a tiny table (one row per week), so collect it and
+# filter in R on parsed dates rather than wrestle Athena's date-cast translation.
+tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
+  collect() |>
+  mutate(
+    date_range_start = as.Date(date_range_start),
+    date_range_end = as.Date(date_range_end)
+  ) |>
+  filter(date_range_start >= week_start, date_range_end <= week_end) |>
+  transmute(
+    date_range_start,
+    date_range_end,
+    calls_answered = as.double(calls_answered),
+    test_calls = as.double(test_calls),
+    genuine_calls = as.double(calls_answered) - as.double(test_calls)
+  )
+
+# weekly_topic_dump has a real DATE column, call_date. Filter on it with as.Date()
+# literals: RAthena renders ISO date-like strings as Athena DATE literals, so a
+# date column compares cleanly (date >= date) while the string `date` mirror
+# would raise a varchar-vs-date mismatch.
+tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
+  filter(call_date >= as.Date(week_start), call_date <= as.Date(week_end)) |>
+  mutate(call_topic = str_squish(statobject)) |>
+  count(call_topic, name = "topic_count") |>
+  collect() |>
+  mutate(topic_share = topic_count / sum(topic_count, na.rm = TRUE)) |>
+  arrange(desc(topic_count)) |>
+  head(10)
+```
+
+```{r teardown}
+DBI::dbDisconnect(con)
+```
