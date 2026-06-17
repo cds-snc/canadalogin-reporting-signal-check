@@ -1,0 +1,21 @@
+# Secrets and connection config
+.env
+
+# Quarto build artifacts
+.quarto/
+*_files/
+/_book/
+
+# Rendered deliverables (source-only repo; the all-in-one HTML is shared, not committed)
+reports/*.html
+*.html
+
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# macOS
+.DS_Store
+Icon?
