@@ -156,8 +156,9 @@ headline_plot <- ggplot(ytd_plot, aes(week_end, ytd_unique_users)) +
   ) +
   geom_text(
     data = rp_launches,
-    aes(x = first_seen, y = 0.5 * max(ytd_plot$ytd_unique_users), label = onboard_label),
-    hjust = rp_launches$label_hjust, vjust = 1, size = 2.8,
+    # Anchor labels just above the x-axis so they clear the trend line above.
+    aes(x = first_seen, y = 0.03 * max(ytd_plot$ytd_unique_users), label = onboard_label),
+    hjust = rp_launches$label_hjust, vjust = 0, size = 2.8,
     color = colors$greyscale[2], lineheight = 0.9
   ) +
   geom_line(color = colors$canada, linewidth = 1) +
