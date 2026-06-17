@@ -17,7 +17,7 @@ unless they no longer work or they're misleading / broken.
 
 ```{r setup}
 source("R/connection.R")
-source("colours.R")
+source("R/colours.R")
 library(dplyr)
 library(dbplyr)
 library(stringr)
