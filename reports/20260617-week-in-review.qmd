@@ -1,0 +1,229 @@
+---
+title: "CanadaLogin - Week in Review"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-06-17"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries below are inlined and frozen to hardcoded June 8-14, 2026 date bounds:
+# this report is a point-in-time record and must reproduce identically forever.
+source("../R/connection.R")
+source("../colours.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(stringr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Headline: weekly snapshot of cumulative YTD unique users, launch through the
+# reporting week. The cumulative column is monotonic within a week, so the
+# week's value is its max. Daily unique_users counts user-days and is not summed.
+ytd_series <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  filter(from_date >= as.Date("2026-04-20"), from_date <= as.Date("2026-06-14")) |>
+  transmute(day = as.Date(from_date), ytd_unique_users = as.double(ytd_unique_users)) |>
+  collect() |>
+  mutate(week_start = monday_of(day)) |>
+  group_by(week_start) |>
+  summarise(ytd_unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  # Plot each week at its LAST day (the Sunday week-ending date), not its start.
+  mutate(week_end = week_start + 6) |>
+  arrange(week_end)
+
+# Relying-party registry: clean service names, operating department, and the
+# internal-app flag. The internal exclusion below is also inlined as a frozen
+# literal list so this report's analytical result cannot change if the registry
+# is later reclassified; the registry is used for display labels and operator.
+relying_parties <- load_relying_parties()
+internal_apps <- c(
+  "Flow Application",
+  "GCS Migration Solution",
+  "GC Sign In - Profile Management App"
+)
+
+# Adoption breadth: sign-ins by public application this week. Internal/system
+# apps are excluded so the view reflects genuine public adoption.
+app_signins <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    from_date >= as.Date("2026-06-08"),
+    from_date <= as.Date("2026-06-14"),
+    !application_name %in% internal_apps
+  ) |>
+  group_by(application_name) |>
+  summarise(
+    total_logins = sum(as.double(total_logins), na.rm = TRUE),
+    unique_users = sum(as.double(unique_users), na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(total_logins)) |>
+  collect() |>
+  left_join(relying_parties, by = "application_name")
+
+# First-ever appearance of each public application, used both to detect new
+# relying parties this week and to annotate the headline with onboarding dates.
+app_first_seen <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  group_by(application_name) |>
+  summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(first_seen = as.Date(first_seen)) |>
+  inner_join(relying_parties, by = "application_name") |>
+  filter(!is_internal)
+
+new_relying_parties <- app_first_seen |>
+  filter(first_seen >= as.Date("2026-06-08"), first_seen <= as.Date("2026-06-14"))
+
+# Onboarding dates within the headline window, for the reference-line labels.
+rp_launches <- app_first_seen |>
+  filter(first_seen >= as.Date("2026-04-20"), first_seen <= as.Date("2026-06-14")) |>
+  mutate(
+    onboard_label = paste0(operator, "\njoined ", format(first_seen, "%b %d")),
+    # Right-most launch labels sit to the left of their line so they do not clip.
+    label_hjust = if_else(first_seen > as.Date("2026-05-20"), 1.05, -0.05)
+  )
+
+# Service health: weekly sign-in success rate and MFA adoption.
+success_week <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  filter(from_date >= as.Date("2026-06-08"), from_date <= as.Date("2026-06-14")) |>
+  summarise(
+    successful_logins = sum(as.double(successful_logins), na.rm = TRUE),
+    failed_logins = sum(as.double(failed_logins), na.rm = TRUE)
+  ) |>
+  collect() |>
+  mutate(success_rate = successful_logins / (successful_logins + failed_logins))
+
+mfa_week <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date("2026-06-08"),
+    from_date <= as.Date("2026-06-14"),
+    result %in% c("success", "failure")
+  ) |>
+  group_by(mfa_type, result) |>
+  summarise(count = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  pivot_wider(names_from = result, values_from = count, values_fill = 0) |>
+  mutate(total = success + failure) |>
+  arrange(desc(total))
+
+# Values referenced in the prose, so the text cannot drift from the queries.
+latest_ytd <- ytd_series$ytd_unique_users[nrow(ytd_series)]
+launch_ytd <- ytd_series$ytd_unique_users[1]
+prev_ytd <- ytd_series$ytd_unique_users[nrow(ytd_series) - 1]
+net_new_users <- latest_ytd - prev_ytd
+success_rate_pct <- round(100 * success_week$success_rate)
+mfa_total <- sum(mfa_week$total)
+mfa_success_pct <- round(100 * sum(mfa_week$success) / mfa_total)
+top_factor_share <- round(100 * mfa_week$total[1] / mfa_total)
+vac <- app_signins |> filter(str_detect(application_name, "VAC"))
+iris <- app_signins |> filter(service_name == "IRIS")
+```
+
+**Reporting period: June 8 to 14, 2026.**
+
+This CanadaLogin Week in Review covers how many people are using CanadaLogin,
+which services they are signing in to, and how reliably the service performed
+over the week.
+
+The headline remains growth. Cumulative unique users for the year reached
+**`r comma(latest_ytd)`**, up **`r comma(net_new_users)`** from the week before
+and more than double the **`r comma(launch_ytd)`** recorded in the first week
+after launch. The trend below shows steady, uninterrupted adoption since
+CanadaLogin went live in April.
+
+```{r headline-graph}
+ytd_plot <- ytd_series |>
+  mutate(is_current = week_end == max(week_end))
+
+ggplot(ytd_plot, aes(week_end, ytd_unique_users)) +
+  geom_vline(
+    data = rp_launches, aes(xintercept = first_seen),
+    color = colors$greyscale[3], linetype = "dashed", linewidth = 0.4
+  ) +
+  geom_text(
+    data = rp_launches,
+    aes(x = first_seen, y = 0.5 * max(ytd_plot$ytd_unique_users), label = onboard_label),
+    hjust = rp_launches$label_hjust, vjust = 1, size = 2.8,
+    color = colors$greyscale[2], lineheight = 0.9
+  ) +
+  geom_line(color = colors$canada, linewidth = 1) +
+  geom_point(color = colors$canada, size = 1.6) +
+  geom_point(
+    data = subset(ytd_plot, is_current),
+    color = colors$highlight[1], size = 3.2
+  ) +
+  geom_text(
+    data = subset(ytd_plot, is_current),
+    aes(label = comma(ytd_unique_users)),
+    color = colors$highlight[1], vjust = -1, fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_x_date(breaks = ytd_plot$week_end, date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Unique users (year to date)",
+    title = "CanadaLogin reach continues to climb",
+    subtitle = "Cumulative unique users for the year, by week since launch"
+  )
+```
+
+The big news this week is a new service joining CanadaLogin. **VAC Healthshare**,
+operated by Veterans Affairs Canada, onboarded on June 9 and was active
+immediately, drawing **`r comma(vac$total_logins)`** sign-ins from
+**`r comma(vac$unique_users)`** users in its first few days. It joins IRIS, run by
+PrairiesCan, as the second public-facing service driving sign-in volume this
+week. Each new relying party widens the base of Canadians who reach government
+services through a single CanadaLogin credential.
+
+```{r adoption-graph}
+app_plot <- app_signins |>
+  mutate(
+    is_new = application_name %in% new_relying_parties$application_name,
+    # Name and department on separate lines so labels stay narrow.
+    label = paste0(service_name, if_else(is_new, " (new)", ""), "\n", operator)
+  )
+
+ggplot(app_plot, aes(reorder(label, total_logins), total_logins, fill = is_new)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = comma(total_logins)), hjust = -0.15, size = 3.6) +
+  coord_flip() +
+  scale_fill_manual(values = c(`FALSE` = colors$canada, `TRUE` = colors$highlight[1])) +
+  scale_y_continuous(labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.18))) +
+  guides(fill = "none") +
+  theme_bw() +
+  labs(
+    x = NULL, y = "Sign-ins this week",
+    title = "Sign-ins by application, week of June 8-14",
+    subtitle = "Veterans Affairs' VAC Healthshare joined this week"
+  )
+```
+
+Service performance held up well as the new traffic arrived. The overall sign-in
+success rate was **`r success_rate_pct`%** for the week, an improvement on recent
+weeks, and multi-factor authentication continued to protect accounts:
+**`r comma(mfa_total)`** second-factor checks completed at a
+**`r mfa_success_pct`%** success rate, with text-message codes the most common
+method (**`r top_factor_share`%** of checks). *Call centre figures for this week
+are not yet available (the latest loaded reporting week ends June 6) and will
+appear in a future review.*
+
+```{r teardown}
+DBI::dbDisconnect(con)
+```
