@@ -1,0 +1,6 @@
+application_name,service_name,operator,is_internal
+IRIS - PRC - Prod,IRIS,PrairiesCan,FALSE
+VAC Healthshare - VAC - Prod,VAC Healthshare,Veterans Affairs Canada,FALSE
+Flow Application,Flow Application,CanadaLogin (internal),TRUE
+GCS Migration Solution,GCS Migration Solution,CanadaLogin (internal),TRUE
+GC Sign In - Profile Management App,Profile Management,CanadaLogin (internal),TRUE

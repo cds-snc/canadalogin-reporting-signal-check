@@ -26,6 +26,10 @@ library(ggplot2)
 library(scales)
 
 con <- connect_athena()
+
+# Relying-party registry: application_name -> service name, operator, internal flag.
+relying_parties <- load_relying_parties()
+internal_apps <- relying_parties$application_name[relying_parties$is_internal]
 ```
 
 ## Resolve the reporting week
@@ -90,6 +94,7 @@ tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   collect() |>
   mutate(first_seen = as.Date(first_seen)) |>
   filter(first_seen >= as.Date(week_start), first_seen <= as.Date(week_end)) |>
+  left_join(relying_parties, by = "application_name") |>
   arrange(first_seen)
 ```
 
@@ -113,8 +118,10 @@ ggplot(ytd, aes(week_start, ytd_unique_users)) +
     data = subset(ytd, week_start == week_start[length(week_start)]),
     color = colors$highlight[1], size = 3
   ) +
-  scale_y_continuous(labels = comma) +
+  scale_y_continuous(labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  scale_x_date(breaks = ytd$week_start, date_labels = "%b %d") +
   theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(x = NULL, y = "YTD unique users", title = "YTD unique users since launch")
 ```
 
@@ -135,15 +142,10 @@ auth_daily |>
 
 ## Adoption breadth: sign-ins by public application (reporting week)
 
-Internal/system apps excluded so the view reflects genuine public adoption.
+Internal/system apps (per the registry) excluded so the view reflects genuine
+public adoption; joined to the registry for operator.
 
 ```{r sign-ins-by-app}
-internal_apps <- c(
-  "Flow Application",
-  "GCS Migration Solution",
-  "GC Sign In - Profile Management App"
-)
-
 tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   filter(
     from_date >= as.Date(week_start),
@@ -153,7 +155,8 @@ tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   group_by(application_name) |>
   summarise(total_logins = sum(as.double(total_logins), na.rm = TRUE), .groups = "drop") |>
   arrange(desc(total_logins)) |>
-  collect()
+  collect() |>
+  left_join(relying_parties, by = "application_name")
 ```
 
 ## Applications per credential (cross-service reach, latest snapshot)

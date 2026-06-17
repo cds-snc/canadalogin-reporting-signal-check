@@ -52,9 +52,16 @@ internal_applications <- c(
 
 # Configuration --------------------------------------------------------------
 
-load_config <- function(env_path = ".env") {
-  if (file.exists(env_path)) dotenv::load_dot_env(env_path)
-  invisible(TRUE)
+# Search upward for the project-root .env so this works whether sourced from the
+# project root (inspect.qmd) or a subdirectory (reports/ renders from reports/).
+load_config <- function() {
+  for (p in c(".env", "../.env", "../../.env")) {
+    if (file.exists(p)) {
+      dotenv::load_dot_env(p)
+      return(invisible(TRUE))
+    }
+  }
+  invisible(FALSE)
 }
 
 # Connection -----------------------------------------------------------------
@@ -68,6 +75,21 @@ connect_athena <- function() {
     region_name    = Sys.getenv("AWS_REGION", "ca-central-1"),
     s3_staging_dir = Sys.getenv("ATHENA_S3_STAGING_DIR")
   )
+}
+
+# Relying-party registry -----------------------------------------------------
+
+# Maps each application_name to a clean service name, its operating department,
+# and whether it is an internal/system app. This is the single place to track
+# who runs each relying party; data/relying_parties.csv is hand-maintained.
+# Searches upward so it loads from the project root or a subdirectory.
+load_relying_parties <- function() {
+  for (p in c("data/relying_parties.csv", "../data/relying_parties.csv")) {
+    if (file.exists(p)) {
+      return(utils::read.csv(p, stringsAsFactors = FALSE))
+    }
+  }
+  stop("relying_parties.csv not found", call. = FALSE)
 }
 
 # Date helpers ---------------------------------------------------------------
