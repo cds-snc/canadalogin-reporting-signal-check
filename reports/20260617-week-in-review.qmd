@@ -19,7 +19,8 @@ execute:
 # Queries below are inlined and frozen to hardcoded June 8-14, 2026 date bounds:
 # this report is a point-in-time record and must reproduce identically forever.
 source("../R/connection.R")
-source("../colours.R")
+source("../R/branding.R")
+source("../R/colours.R")
 suppressPackageStartupMessages({
   library(dplyr)
   library(dbplyr)
@@ -148,7 +149,7 @@ CanadaLogin went live in April.
 ytd_plot <- ytd_series |>
   mutate(is_current = week_end == max(week_end))
 
-ggplot(ytd_plot, aes(week_end, ytd_unique_users)) +
+headline_plot <- ggplot(ytd_plot, aes(week_end, ytd_unique_users)) +
   geom_vline(
     data = rp_launches, aes(xintercept = first_seen),
     color = colors$greyscale[3], linetype = "dashed", linewidth = 0.4
@@ -182,6 +183,8 @@ ggplot(ytd_plot, aes(week_end, ytd_unique_users)) +
     title = "CanadaLogin reach continues to climb",
     subtitle = "Cumulative unique users for the year, by week since launch"
   )
+
+add_cds_logo(headline_plot)
 ```
 
 The big news this week is a new service joining CanadaLogin. **VAC Healthshare**,
@@ -200,7 +203,7 @@ app_plot <- app_signins |>
     label = paste0(service_name, if_else(is_new, " (new)", ""), "\n", operator)
   )
 
-ggplot(app_plot, aes(reorder(label, total_logins), total_logins, fill = is_new)) +
+adoption_plot <- ggplot(app_plot, aes(reorder(label, total_logins), total_logins, fill = is_new)) +
   geom_col(width = 0.6) +
   geom_text(aes(label = comma(total_logins)), hjust = -0.15, size = 3.6) +
   coord_flip() +
@@ -213,6 +216,8 @@ ggplot(app_plot, aes(reorder(label, total_logins), total_logins, fill = is_new))
     title = "Sign-ins by application, week of June 8-14",
     subtitle = "Veterans Affairs' VAC Healthshare joined this week"
   )
+
+add_cds_logo(adoption_plot)
 ```
 
 Service performance held up well as the new traffic arrived. The overall sign-in
