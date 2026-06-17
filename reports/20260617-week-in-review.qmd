@@ -97,16 +97,7 @@ rp_launches <- app_first_seen |>
     label_hjust = if_else(first_seen > as.Date("2026-05-20"), 1.05, -0.05)
   )
 
-# Service health: weekly sign-in success rate and MFA adoption.
-success_week <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
-  filter(from_date >= as.Date("2026-06-08"), from_date <= as.Date("2026-06-14")) |>
-  summarise(
-    successful_logins = sum(as.double(successful_logins), na.rm = TRUE),
-    failed_logins = sum(as.double(failed_logins), na.rm = TRUE)
-  ) |>
-  collect() |>
-  mutate(success_rate = successful_logins / (successful_logins + failed_logins))
-
+# Service health: weekly MFA adoption.
 mfa_week <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
   filter(
     from_date >= as.Date("2026-06-08"),
@@ -125,10 +116,10 @@ latest_ytd <- ytd_series$ytd_unique_users[nrow(ytd_series)]
 launch_ytd <- ytd_series$ytd_unique_users[1]
 prev_ytd <- ytd_series$ytd_unique_users[nrow(ytd_series) - 1]
 net_new_users <- latest_ytd - prev_ytd
-success_rate_pct <- round(100 * success_week$success_rate)
+# Total sign-ins to public services this week. App logins (unlike account-wide
+# sign-in events) are not inflated by per-factor counting, so they can be summed.
+total_app_signins <- sum(app_signins$total_logins)
 mfa_total <- sum(mfa_week$total)
-mfa_success_pct <- round(100 * sum(mfa_week$success) / mfa_total)
-top_factor_share <- round(100 * mfa_week$total[1] / mfa_total)
 vac <- app_signins |> filter(str_detect(application_name, "VAC"))
 iris <- app_signins |> filter(service_name == "IRIS")
 ```
@@ -221,14 +212,12 @@ adoption_plot <- ggplot(app_plot, aes(reorder(label, total_logins), total_logins
 add_cds_logo(adoption_plot)
 ```
 
-Service performance held up well as the new traffic arrived. The overall sign-in
-success rate was **`r success_rate_pct`%** for the week, an improvement on recent
-weeks, and multi-factor authentication continued to protect accounts:
-**`r comma(mfa_total)`** second-factor checks completed at a
-**`r mfa_success_pct`%** success rate, with text-message codes the most common
-method (**`r top_factor_share`%** of checks). *Call centre figures for this week
-are not yet available (the latest loaded reporting week ends June 6) and will
-appear in a future review.*
+CanadaLogin saw strong activity as the new traffic arrived, with
+**`r comma(total_app_signins)`** sign-ins to government services over the week.
+Multi-factor authentication remained widely used to protect accounts, with
+**`r comma(mfa_total)`** second-factor checks completed, the bulk of them
+text-message codes. *Call centre figures for this week are not yet available (the
+latest loaded reporting week ends June 6) and will appear in a future review.*
 
 ```{r teardown}
 DBI::dbDisconnect(con)
