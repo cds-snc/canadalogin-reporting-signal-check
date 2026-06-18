@@ -18,12 +18,14 @@ unless they no longer work or they're misleading / broken.
 ```{r setup}
 source("R/connection.R")
 source("R/colours.R")
-library(dplyr)
-library(dbplyr)
-library(stringr)
-library(tidyr)
-library(ggplot2)
-library(scales)
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(stringr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+})
 
 con <- connect_athena()
 
@@ -55,11 +57,14 @@ period_start <- period_end - 13L
 
 default_period_end <- monday_of(Sys.Date()) - 1L
 
-cat("Resolved reporting period:", format(period_start), "to", format(period_end), "\n")
-cat("Max date with data:", format(max_data_date), "\n")
+# Resolved period and data freshness; auto-prints as a labelled vector.
+c(period_start  = format(period_start),
+  period_end    = format(period_end),
+  max_data_date = format(max_data_date))
+
 if (period_end < default_period_end) {
-  cat("WARNING: warehouse appears to lag - resolved period ends earlier than the",
-      "default two weeks through the most recent Sunday.\n")
+  warning("warehouse lag: resolved period ends earlier than the default two ",
+          "weeks through the most recent Sunday")
 }
 ```
 
@@ -81,10 +86,11 @@ auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
 # Check from the actual launch date, not the launch week's Monday: Apr 20-21 are
 # legitimately empty (pre-launch) and would otherwise flag as missing every week.
 expected_days <- seq(as.Date(launch_date), as.Date(period_end), by = "day")
-cat("Missing days in auth feed since launch:\n")
-print(expected_days[!expected_days %in% auth_daily$day])
-cat("\nDays with zero successful logins:\n")
-print(auth_daily$day[auth_daily$successful_logins == 0])
+# Named list auto-prints with each element labelled by its name.
+list(
+  missing_days = expected_days[!expected_days %in% auth_daily$day],
+  zero_success_days = auth_daily$day[auth_daily$successful_logins == 0]
+)
 ```
 
 ## New relying parties (onboarding this period)
@@ -132,16 +138,30 @@ ggplot(ytd, aes(week_end, ytd_unique_users)) +
 ## Sign-in success rate (weekly)
 
 ```{r success-rate}
-auth_daily |>
-  mutate(week_start = monday_of(day)) |>
-  group_by(week_start) |>
+success_weekly <- auth_daily |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
   summarise(
     successful_logins = sum(successful_logins, na.rm = TRUE),
     failed_logins = sum(failed_logins, na.rm = TRUE),
     .groups = "drop"
   ) |>
   mutate(success_rate = successful_logins / (successful_logins + failed_logins)) |>
-  arrange(week_start)
+  arrange(week_end)
+
+print(success_weekly)
+
+# Y-axis is left auto-scaled, not anchored at 0: in the workbook we want to see
+# the week-to-week deviations worth investigating, not a flat near-100% band.
+ggplot(success_weekly, aes(week_end, success_rate)) +
+  geom_line(color = colors$canada) +
+  geom_point(color = colors$canada, size = 1.6) +
+  scale_y_continuous(labels = percent) +
+  scale_x_date(breaks = success_weekly$week_end, date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Sign-in success rate",
+       title = "Weekly sign-in success rate since launch")
 ```
 
 ## Adoption breadth: sign-ins by public application (reporting period)
@@ -161,6 +181,37 @@ tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   arrange(desc(total_logins)) |>
   collect() |>
   left_join(relying_parties, by = "application_name")
+```
+
+### Weekly trend (since launch)
+
+```{r sign-ins-by-app-trend}
+signins_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    from_date >= as.Date(launch_week_start),
+    from_date <= as.Date(period_end),
+    !application_name %in% internal_apps
+  ) |>
+  transmute(application_name, day = as.Date(from_date), total_logins = as.double(total_logins)) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(application_name, week_end) |>
+  summarise(total_logins = sum(total_logins, na.rm = TRUE), .groups = "drop") |>
+  left_join(relying_parties, by = "application_name") |>
+  arrange(application_name, week_end)
+
+print(signins_weekly)
+
+ggplot(signins_weekly, aes(week_end, total_logins, color = service_name)) +
+  geom_line() +
+  geom_point(size = 1.4) +
+  scale_color_manual(values = colors$primary) +
+  scale_y_continuous(labels = comma, limits = c(0, NA)) +
+  scale_x_date(breaks = unique(signins_weekly$week_end), date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Sign-ins", color = "Service",
+       title = "Weekly sign-ins by public application since launch")
 ```
 
 ## Applications per credential (cross-service reach, latest snapshot)
@@ -202,6 +253,39 @@ tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
   arrange(desc(total))
 ```
 
+### Weekly MFA success rate (since launch)
+
+```{r mfa-trend}
+mfa_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(launch_week_start),
+    from_date <= as.Date(period_end),
+    result %in% c("success", "failure")
+  ) |>
+  transmute(day = as.Date(from_date), result, count = as.double(count)) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(
+    outcomes = sum(count, na.rm = TRUE),
+    success_rate = sum(count[result == "success"], na.rm = TRUE) / sum(count, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(week_end)
+
+print(mfa_weekly)
+
+ggplot(mfa_weekly, aes(week_end, success_rate)) +
+  geom_line(color = colors$canada) +
+  geom_point(color = colors$canada, size = 1.6) +
+  scale_y_continuous(labels = percent) +
+  scale_x_date(breaks = mfa_weekly$week_end, date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "MFA success rate",
+       title = "Weekly MFA success rate since launch")
+```
+
 ## Call centre (reporting period)
 
 Test calls separated out; volumes are tiny, so prefer counts over rates.
@@ -237,6 +321,33 @@ tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
   mutate(topic_share = topic_count / sum(topic_count, na.rm = TRUE)) |>
   arrange(desc(topic_count)) |>
   head(10)
+```
+
+### Weekly genuine call volume (since launch)
+
+Volumes are tiny, so read this as direction, not precision; a topic spike is the
+kind of "big change" worth chasing down.
+
+```{r call-centre-trend}
+calls_weekly <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
+  collect() |>
+  mutate(
+    week_end = as.Date(date_range_end),
+    genuine_calls = as.double(calls_answered) - as.double(test_calls)
+  ) |>
+  filter(week_end <= period_end) |>
+  transmute(week_end, genuine_calls) |>
+  arrange(week_end)
+
+print(calls_weekly)
+
+ggplot(calls_weekly, aes(week_end, genuine_calls)) +
+  geom_col(fill = colors$canada) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  scale_x_date(breaks = calls_weekly$week_end, date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Genuine calls", title = "Weekly genuine call volume")
 ```
 
 ```{r teardown}

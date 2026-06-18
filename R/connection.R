@@ -69,6 +69,9 @@ load_config <- function() {
 connect_athena <- function() {
   check_packages()
   load_config()
+  # Silence RAthena's per-query "Data scanned: X Bytes" INFO output; it is noise
+  # in the rendered workbook and reports. Affects console output only, not results.
+  RAthena::RAthena_options(verbose = FALSE)
   DBI::dbConnect(
     RAthena::athena(),
     profile_name   = Sys.getenv("AWS_PROFILE"),
