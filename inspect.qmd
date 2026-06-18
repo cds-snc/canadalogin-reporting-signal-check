@@ -225,6 +225,36 @@ ggplot(signins_weekly, aes(week_end, total_logins, color = service_name)) +
        title = "Weekly sign-ins by public application since launch")
 ```
 
+### Stacked weekly sign-ins by public application
+
+Same data as above but stacked to show total volume and each app's share.
+Applications below 1% of total sign-ins in the most recent week are binned
+into "Other" -- the chart may therefore hide low-traffic apps.
+
+```{r sign-ins-stacked}
+latest_signin_week <- max(signins_weekly$week_end)
+latest_totals <- signins_weekly |>
+  filter(week_end == latest_signin_week) |>
+  mutate(share = total_logins / sum(total_logins, na.rm = TRUE))
+major_apps <- latest_totals$service_name[latest_totals$share >= 0.01]
+
+signins_stacked <- signins_weekly |>
+  mutate(service_label = if_else(service_name %in% major_apps, service_name, "Other")) |>
+  group_by(service_label, week_end) |>
+  summarise(total_logins = sum(total_logins, na.rm = TRUE), .groups = "drop")
+
+ggplot(signins_stacked, aes(week_end, total_logins, fill = service_label)) +
+  geom_col() +
+  scale_fill_manual(values = c(colors$primary, unname(colors$missions$dark))) +
+  scale_y_continuous(labels = comma, limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.05))) +
+  scale_x_date(breaks = unique(signins_stacked$week_end), date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Sign-ins", fill = "Service",
+       title = "Weekly sign-ins by public application (stacked)")
+```
+
 ## Applications per credential (cross-service reach, weekly)
 
 Sum of each app's cumulative YTD distinct users / overall CanadaLogin YTD distinct
