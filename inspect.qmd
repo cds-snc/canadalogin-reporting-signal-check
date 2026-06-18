@@ -121,7 +121,7 @@ ytd <- auth_daily |>
   mutate(week_end = week_start + 6) |>
   arrange(week_end)
 
-print(ytd)
+print(ytd, n = 500)
 
 ggplot(ytd, aes(week_end, ytd_unique_users)) +
   geom_line(color = colors$canada) +
@@ -153,7 +153,7 @@ success_weekly <- auth_daily |>
   mutate(success_rate = successful_logins / (successful_logins + failed_logins)) |>
   arrange(week_end)
 
-print(success_weekly)
+print(success_weekly, n = 500)
 
 # Y-axis is left auto-scaled, not anchored at 0: in the workbook we want to see
 # the week-to-week deviations worth investigating, not a flat near-100% band.
@@ -211,7 +211,7 @@ signins_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   left_join(relying_parties, by = "application_name") |>
   arrange(application_name, week_end)
 
-print(signins_weekly)
+print(signins_weekly, n = 500)
 
 ggplot(signins_weekly, aes(week_end, total_logins, color = service_name)) +
   geom_line() +
@@ -272,7 +272,7 @@ apps_per_credential_weekly <- auth_daily |>
   ) |>
   arrange(week_end)
 
-print(apps_per_credential_weekly)
+print(apps_per_credential_weekly, n = 500)
 
 apps_per_credential_weekly |>
   select(week_end,
@@ -337,7 +337,7 @@ mfa_factor_mix <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
   mutate(share = mfa_auth / sum(mfa_auth)) |>
   arrange(desc(mfa_auth))
 
-print(mfa_factor_mix)
+print(mfa_factor_mix, n = 500)
 
 # Round shares to whole percentage points, then nudge the largest so the squares
 # sum to exactly 100: a clean 10-per-layer waffle where one square = 1% of
@@ -381,7 +381,7 @@ mfa_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
   ) |>
   arrange(week_end)
 
-print(mfa_weekly)
+print(mfa_weekly, n = 500)
 
 ggplot(mfa_weekly, aes(week_end, success_rate)) +
   geom_line(color = colors$canada) +
@@ -406,6 +406,82 @@ ggplot(mfa_weekly, aes(week_end, outcomes)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(x = NULL, y = "MFA outcome events",
        title = "Weekly MFA outcome volume since launch")
+```
+
+## MFA success rate by factor
+
+Per-factor success rate so we can spot whether one second factor is notably
+harder to clear than another. "sent" rows excluded -- rate is from outcome
+events only. Read alongside `mfa_attempts`: low-volume factors post noisy rates.
+
+```{r mfa-success-by-factor}
+mfa_by_factor <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(period_start),
+    from_date <= as.Date(period_end),
+    result %in% c("success", "failure")
+  ) |>
+  group_by(mfa_type) |>
+  summarise(
+    mfa_attempts = sum(as.double(count), na.rm = TRUE),
+    mfa_success_rate =
+      sum(if_else(result == "success", as.double(count), 0), na.rm = TRUE) /
+        sum(as.double(count), na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(mfa_attempts)) |>
+  collect()
+
+print(mfa_by_factor, n = 500)
+```
+
+### Weekly MFA success rate by factor (since launch)
+
+```{r mfa-success-by-factor-trend}
+mfa_factor_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(launch_week_start),
+    from_date <= as.Date(period_end),
+    result %in% c("success", "failure")
+  ) |>
+  transmute(
+    day = as.Date(from_date),
+    mfa_type,
+    result,
+    count = as.double(count)
+  ) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(mfa_type, week_end) |>
+  summarise(
+    mfa_attempts = sum(count, na.rm = TRUE),
+    mfa_success_rate = sum(count[result == "success"], na.rm = TRUE) /
+      sum(count, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(mfa_type, week_end)
+
+print(mfa_factor_weekly, n = 500)
+
+latest_week <- max(mfa_factor_weekly$week_end)
+latest_share <- mfa_factor_weekly |>
+  filter(week_end == latest_week) |>
+  mutate(share = mfa_attempts / sum(mfa_attempts, na.rm = TRUE))
+visible_factors <- latest_share$mfa_type[latest_share$share >= 0.005]
+
+high_volume_factors <- mfa_factor_weekly |>
+  filter(mfa_type %in% visible_factors)
+
+ggplot(high_volume_factors, aes(week_end, mfa_success_rate, color = mfa_type)) +
+  geom_line() +
+  geom_point(size = 1.4) +
+  scale_color_manual(values = c(colors$primary, unname(colors$missions$dark))) +
+  scale_y_continuous(labels = percent) +
+  scale_x_date(breaks = unique(mfa_factor_weekly$week_end), date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Success rate", color = "Factor",
+       title = "Weekly MFA success rate by factor since launch")
 ```
 
 ## Call centre (reporting period)
@@ -461,7 +537,7 @@ calls_weekly <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
   transmute(week_end, genuine_calls) |>
   arrange(week_end)
 
-print(calls_weekly)
+print(calls_weekly, n = 500)
 
 ggplot(calls_weekly, aes(week_end, genuine_calls)) +
   geom_col(fill = colors$canada) +
