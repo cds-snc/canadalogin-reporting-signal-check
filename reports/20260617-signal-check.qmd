@@ -1,5 +1,5 @@
 ---
-title: "CanadaLogin - Fortnightly Review"
+title: "CanadaLogin - Signal Check"
 author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
 date: "2026-06-17"
 format:

@@ -1,4 +1,4 @@
-#' Athena connection and shared setup for the CanadaLogin Fortnightly Review.
+#' Athena connection and shared setup for the CanadaLogin Signal Check.
 #'
 #' This file holds ONLY non-analytical setup: the connection factory, a package
 #' check, pure date helpers, and constants for inspect.qmd. The data queries

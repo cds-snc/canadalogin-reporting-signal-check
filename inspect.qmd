@@ -1,5 +1,5 @@
 ---
-title: "CanadaLogin Fortnightly Review - Inspection Workbook"
+title: "CanadaLogin Signal Check - Inspection Workbook"
 subtitle: "Internal use only. Not a polished report."
 format:
   html:
