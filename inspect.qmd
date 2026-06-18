@@ -25,6 +25,7 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(ggplot2)
   library(scales)
+  library(ggbrick)  # geom_waffle / coord_waffle (maintained CRAN waffle-chart pkg)
 })
 
 con <- connect_athena()
@@ -214,21 +215,66 @@ ggplot(signins_weekly, aes(week_end, total_logins, color = service_name)) +
        title = "Weekly sign-ins by public application since launch")
 ```
 
-## Applications per credential (cross-service reach, latest snapshot)
+## Applications per credential (cross-service reach, weekly)
+
+Sum of each app's cumulative YTD distinct users / overall CanadaLogin YTD distinct
+users (cookbook: applications-per-credential). 1.0 means the typical credential
+touches one application. The cookbook flags that internal apps (migration,
+profile-management) inflate this, so we show it both for all integrated apps and
+for public-facing apps only.
 
 ```{r apps-per-credential}
-sum_app_unique_users <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
-  group_by(application_name) |>
-  slice_max(from_date, n = 1, with_ties = FALSE) |>
-  ungroup() |>
-  summarise(s = sum(as.double(ytd_unique_users), na.rm = TRUE)) |>
-  pull(s)
+# Per-week, take each cumulative series' week-ending value (ytd is monotonic
+# within a week, so the max), then form the ratio. auth_daily already holds the
+# overall YTD series; here we add the per-app sum, split by internal flag.
+app_ytd_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(from_date >= as.Date(launch_week_start), from_date <= as.Date(period_end)) |>
+  transmute(
+    application_name,
+    day = as.Date(from_date),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6, is_internal = application_name %in% internal_apps) |>
+  group_by(application_name, is_internal, week_end) |>
+  summarise(app_ytd = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  group_by(week_end) |>
+  summarise(
+    sum_app_all = sum(app_ytd, na.rm = TRUE),
+    sum_app_public = sum(app_ytd[!is_internal], na.rm = TRUE),
+    .groups = "drop"
+  )
 
-overall_unique_users <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
-  slice_max(from_date, n = 1, with_ties = FALSE) |>
-  pull(ytd_unique_users)
+apps_per_credential_weekly <- auth_daily |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(overall_unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  inner_join(app_ytd_weekly, by = "week_end") |>
+  mutate(
+    apps_per_credential = sum_app_all / overall_unique_users,
+    apps_per_credential_public = sum_app_public / overall_unique_users
+  ) |>
+  arrange(week_end)
 
-sum_app_unique_users / as.double(overall_unique_users)
+print(apps_per_credential_weekly)
+
+apps_per_credential_weekly |>
+  select(week_end,
+         `All apps` = apps_per_credential,
+         `Public only` = apps_per_credential_public) |>
+  pivot_longer(-week_end, names_to = "scope", values_to = "apps_per_credential") |>
+  ggplot(aes(week_end, apps_per_credential, color = scope)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = colors$greyscale[3]) +
+  geom_line() +
+  geom_point(size = 1.6) +
+  scale_color_manual(values = colors$primary) +
+  scale_y_continuous(limits = c(0, NA)) +
+  scale_x_date(breaks = apps_per_credential_weekly$week_end, date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Applications per credential", color = NULL,
+       title = "Weekly applications per credential since launch",
+       subtitle = "All integrated apps vs public-facing only (internal excluded)")
 ```
 
 ## MFA factor mix and success (reporting period)
@@ -251,6 +297,49 @@ tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
     success_rate = if_else(total > 0, success / total, NA_real_)
   ) |>
   arrange(desc(total))
+```
+
+### Factor mix (waffle)
+
+```{r mfa-waffle}
+# Canonical factor mix (cookbook: mfa-activity-by-factor): count "sent" for OTP
+# types and outcomes for non-OTP, so OTP factors are not double-counted against
+# non-OTP ones. (This is the volume-mix view; the table above carries per-factor
+# success rates.)
+otp_types <- c("sms_otp", "email_otp", "voice_otp")
+mfa_factor_mix <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(period_start),
+    from_date <= as.Date(period_end),
+    result == "sent" |
+      (result %in% c("success", "failure") & !mfa_type %in% otp_types)
+  ) |>
+  group_by(mfa_type) |>
+  summarise(mfa_auth = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  filter(mfa_auth > 0) |>
+  mutate(share = mfa_auth / sum(mfa_auth)) |>
+  arrange(desc(mfa_auth))
+
+print(mfa_factor_mix)
+
+# Round shares to whole percentage points, then nudge the largest so the squares
+# sum to exactly 100: a clean 10-per-layer waffle where one square = 1% of
+# challenges.
+mfa_waffle <- mfa_factor_mix |>
+  mutate(pct = round(share * 100))
+mfa_waffle$pct[which.max(mfa_waffle$pct)] <-
+  mfa_waffle$pct[which.max(mfa_waffle$pct)] + (100L - sum(mfa_waffle$pct))
+
+# geom_waffle0 (gap = 0) makes the squares touch with no white space between them;
+# scale_fill_brewer pulls a ColorBrewer qualitative palette for clearer contrast.
+ggplot(mfa_waffle) +
+  geom_waffle0(aes(x = "MFA factor mix", y = pct, fill = mfa_type), bricks_per_layer = 10) +
+  coord_waffle(10) +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_void() +
+  labs(fill = "Factor", title = "MFA factor mix this period",
+       subtitle = "Each square = 1% of MFA challenges (sent for OTP, outcomes for non-OTP)")
 ```
 
 ### Weekly MFA success rate (since launch)
@@ -284,6 +373,17 @@ ggplot(mfa_weekly, aes(week_end, success_rate)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(x = NULL, y = "MFA success rate",
        title = "Weekly MFA success rate since launch")
+
+# Volume of MFA outcome events per week ("sent" excluded), to read alongside the
+# rate: a rate move on rising volume is a different story than on flat volume.
+ggplot(mfa_weekly, aes(week_end, outcomes)) +
+  geom_col(fill = colors$canada) +
+  scale_y_continuous(labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  scale_x_date(breaks = mfa_weekly$week_end, date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "MFA outcome events",
+       title = "Weekly MFA outcome volume since launch")
 ```
 
 ## Call centre (reporting period)
