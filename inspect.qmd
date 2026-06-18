@@ -25,7 +25,7 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(ggplot2)
   library(scales)
-  library(ggbrick)  # geom_waffle / coord_waffle (maintained CRAN waffle-chart pkg)
+  library(ggbrick)
 })
 
 con <- connect_athena()
@@ -129,7 +129,10 @@ ggplot(ytd, aes(week_end, ytd_unique_users)) +
     data = subset(ytd, week_end == week_end[length(week_end)]),
     color = colors$highlight[1], size = 3
   ) +
-  scale_y_continuous(labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
   scale_x_date(breaks = ytd$week_end, date_labels = "%b %d") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
@@ -178,7 +181,10 @@ tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
     !application_name %in% internal_apps
   ) |>
   group_by(application_name) |>
-  summarise(total_logins = sum(as.double(total_logins), na.rm = TRUE), .groups = "drop") |>
+  summarise(
+    total_logins = sum(as.double(total_logins), na.rm = TRUE),
+    .groups = "drop"
+  ) |>
   arrange(desc(total_logins)) |>
   collect() |>
   left_join(relying_parties, by = "application_name")
@@ -193,7 +199,11 @@ signins_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
     from_date <= as.Date(period_end),
     !application_name %in% internal_apps
   ) |>
-  transmute(application_name, day = as.Date(from_date), total_logins = as.double(total_logins)) |>
+  transmute(
+    application_name,
+    day = as.Date(from_date),
+    total_logins = as.double(total_logins)
+  ) |>
   collect() |>
   mutate(week_end = monday_of(day) + 6) |>
   group_by(application_name, week_end) |>
@@ -235,7 +245,10 @@ app_ytd_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
     ytd_unique_users = as.double(ytd_unique_users)
   ) |>
   collect() |>
-  mutate(week_end = monday_of(day) + 6, is_internal = application_name %in% internal_apps) |>
+  mutate(
+    week_end = monday_of(day) + 6,
+    is_internal = application_name %in% internal_apps
+  ) |>
   group_by(application_name, is_internal, week_end) |>
   summarise(app_ytd = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
   group_by(week_end) |>
@@ -248,7 +261,10 @@ app_ytd_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
 apps_per_credential_weekly <- auth_daily |>
   mutate(week_end = monday_of(day) + 6) |>
   group_by(week_end) |>
-  summarise(overall_unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  summarise(
+    overall_unique_users = max(ytd_unique_users, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
   inner_join(app_ytd_weekly, by = "week_end") |>
   mutate(
     apps_per_credential = sum_app_all / overall_unique_users,
@@ -334,12 +350,14 @@ mfa_waffle$pct[which.max(mfa_waffle$pct)] <-
 # geom_waffle0 (gap = 0) makes the squares touch with no white space between them;
 # scale_fill_brewer pulls a ColorBrewer qualitative palette for clearer contrast.
 ggplot(mfa_waffle) +
-  geom_waffle0(aes(x = "MFA factor mix", y = pct, fill = mfa_type), bricks_per_layer = 10) +
+  geom_waffle0(aes(x = "MFA", y = pct, fill = mfa_type), bricks_per_layer = 10) +
   coord_waffle(10) +
-  scale_fill_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Set1") +
   theme_void() +
-  labs(fill = "Factor", title = "MFA factor mix this period",
-       subtitle = "Each square = 1% of MFA challenges (sent for OTP, outcomes for non-OTP)")
+  labs(
+    fill = "Factor", title = "MFA factor mix this period",
+    subtitle = "Each square = 1% of MFA challenges (sent for OTP, outcomes for non-OTP)"
+  )
 ```
 
 ### Weekly MFA success rate (since launch)
@@ -357,7 +375,8 @@ mfa_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
   group_by(week_end) |>
   summarise(
     outcomes = sum(count, na.rm = TRUE),
-    success_rate = sum(count[result == "success"], na.rm = TRUE) / sum(count, na.rm = TRUE),
+    success_rate = sum(count[result == "success"], na.rm = TRUE) /
+      sum(count, na.rm = TRUE),
     .groups = "drop"
   ) |>
   arrange(week_end)
@@ -378,7 +397,10 @@ ggplot(mfa_weekly, aes(week_end, success_rate)) +
 # rate: a rate move on rising volume is a different story than on flat volume.
 ggplot(mfa_weekly, aes(week_end, outcomes)) +
   geom_col(fill = colors$canada) +
-  scale_y_continuous(labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
   scale_x_date(breaks = mfa_weekly$week_end, date_labels = "%b %d") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
