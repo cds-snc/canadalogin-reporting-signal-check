@@ -1,0 +1,349 @@
+---
+title: "CanadaLogin - Fortnightly Review"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-06-17"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries below are inlined and frozen to hardcoded June 1-14, 2026 date bounds
+# (the two complete Mon-Sun weeks ending on the most recent Sunday). This report
+# is a point-in-time record and must reproduce identically forever, so the bounds
+# and the internal-app list are literals rather than computed.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(stringr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Daily CanadaLogin-wide totals, launch through the period end. Time-series
+# graphs plot weekly points even though the reporting period is two weeks, so
+# this spans from the launch week, not just the period.
+auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  filter(from_date >= as.Date("2026-04-20"), from_date <= as.Date("2026-06-14")) |>
+  transmute(
+    day = as.Date(from_date),
+    successful_logins = as.double(successful_logins),
+    failed_logins = as.double(failed_logins),
+    ytd_unique_users = as.double(ytd_unique_users),
+    rolling_365d_unique_users = as.double(rolling_365d_unique_users)
+  ) |>
+  collect() |>
+  arrange(day)
+
+# Headline series: cumulative YTD unique users by week. The ytd column is
+# monotonic within a week, so the week's value is its max. Daily unique_users
+# counts user-days and must not be summed. Plot each week at its last day.
+ytd_series <- auth_daily |>
+  mutate(week_start = monday_of(day)) |>
+  group_by(week_start) |>
+  summarise(ytd_unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  mutate(week_end = week_start + 6) |>
+  arrange(week_end)
+
+# Weekly successful first-factor events, used with the MFA successes below to
+# estimate completed sign-in sessions (cookbook: completed-sign-in-sessions).
+succ_weekly <- auth_daily |>
+  mutate(week_start = monday_of(day), week_end = week_start + 6) |>
+  group_by(week_end) |>
+  summarise(succ = sum(successful_logins), fail = sum(failed_logins), .groups = "drop")
+
+# Weekly successful MFA (second-factor) events. Outcome rows only; a "sent" OTP
+# is an issuance, not a success.
+mfa_success_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date("2026-04-20"),
+    from_date <= as.Date("2026-06-14"),
+    result == "success"
+  ) |>
+  transmute(day = as.Date(from_date), count = as.double(count)) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(mfa_succ = sum(count), .groups = "drop")
+
+# Estimated completed sign-in sessions per week: one first-factor success per
+# session, so successful events minus second-factor successes leaves one event
+# per completed session. An estimate - see the cookbook recipe for assumptions.
+sessions_series <- succ_weekly |>
+  left_join(mfa_success_weekly, by = "week_end") |>
+  mutate(
+    mfa_succ = coalesce(mfa_succ, 0),
+    est_sessions = succ - mfa_succ,
+    success_rate = succ / (succ + fail)
+  ) |>
+  arrange(week_end)
+
+# Relying-party registry: clean service names, operating department, internal
+# flag. The internal exclusion is inlined as a frozen literal list so this
+# report's analytical result cannot change if the registry is later reclassified.
+relying_parties <- load_relying_parties()
+internal_apps <- c(
+  "Flow Application",
+  "GCS Migration Solution",
+  "GC Sign In - Profile Management App"
+)
+
+# Adoption breadth: sign-ins to public applications over the fortnight. Internal
+# apps excluded. total_logins counts events and is summable; unique_users would
+# count user-days if summed, so distinct reach uses each app's ytd figure below.
+app_signins <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    from_date >= as.Date("2026-06-01"),
+    from_date <= as.Date("2026-06-14"),
+    !application_name %in% internal_apps
+  ) |>
+  group_by(application_name) |>
+  summarise(total_logins = sum(as.double(total_logins), na.rm = TRUE), .groups = "drop") |>
+  arrange(desc(total_logins)) |>
+  collect() |>
+  left_join(relying_parties, by = "application_name")
+
+# Distinct year-to-date reach per public app (latest snapshot in the window).
+# ytd_unique_users is a stored distinct count, so take the latest row, not a sum.
+app_ytd_reach <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(from_date <= as.Date("2026-06-14"), !application_name %in% internal_apps) |>
+  group_by(application_name) |>
+  slice_max(from_date, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  transmute(application_name, ytd_unique_users = as.double(ytd_unique_users)) |>
+  collect()
+
+# First-ever appearance of each public application: detects new relying parties
+# in the period and supplies the headline's onboarding reference lines.
+app_first_seen <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  group_by(application_name) |>
+  summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(first_seen = as.Date(first_seen)) |>
+  inner_join(relying_parties, by = "application_name") |>
+  filter(!is_internal)
+
+rp_launches <- app_first_seen |>
+  filter(first_seen >= as.Date("2026-04-20"), first_seen <= as.Date("2026-06-14")) |>
+  mutate(
+    onboard_label = paste0(operator, "\njoined ", format(first_seen, "%b %d")),
+    # Right-most launch labels sit to the left of their line so they do not clip.
+    label_hjust = if_else(first_seen > as.Date("2026-05-20"), 1.05, -0.05)
+  )
+
+# Public relying parties first seen within the reporting fortnight, used to flag
+# newly onboarded services in the adoption chart.
+new_relying_parties <- app_first_seen |>
+  filter(first_seen >= as.Date("2026-06-01"), first_seen <= as.Date("2026-06-14"))
+
+# MFA factor mix over the fortnight (cookbook: mfa-activity-by-factor). OTP types
+# log a "sent" plus an outcome event per challenge; non-OTP types log only an
+# outcome. Count "sent" for OTP and outcomes for non-OTP so the two are not
+# double-counted relative to each other.
+otp_types <- c("sms_otp", "email_otp", "voice_otp")
+mfa_mix <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date("2026-06-01"),
+    from_date <= as.Date("2026-06-14"),
+    result == "sent" |
+      (result %in% c("success", "failure") & !mfa_type %in% otp_types)
+  ) |>
+  group_by(mfa_type) |>
+  summarise(mfa_auth = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(share = mfa_auth / sum(mfa_auth)) |>
+  arrange(desc(mfa_auth))
+
+# MFA success rate over the fortnight: successes over outcome events ("sent"
+# excluded, as it is not an outcome).
+mfa_success_rate <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date("2026-06-01"),
+    from_date <= as.Date("2026-06-14"),
+    result %in% c("success", "failure")
+  ) |>
+  summarise(
+    rate = sum(if_else(result == "success", as.double(count), 0), na.rm = TRUE) /
+      sum(as.double(count), na.rm = TRUE)
+  ) |>
+  pull(rate)
+
+# Call centre: weekly_activity_report stores date columns as strings (catalog:
+# cast to DATE when filtering). It is tiny (one row per week), so collect and
+# filter in R on parsed dates. Its weeks run Sunday-Saturday and the feed lags, so
+# they do not align to the Mon-Sun reporting fortnight. We use the two most recent
+# loaded call-centre weeks (May 31-Jun 6 and Jun 7-13); they end one day before
+# the period's June 14, which is close enough at this volume.
+call_activity <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
+  collect() |>
+  mutate(
+    date_range_start = as.Date(date_range_start),
+    date_range_end = as.Date(date_range_end)
+  ) |>
+  filter(date_range_start >= as.Date("2026-05-31"), date_range_end <= as.Date("2026-06-13")) |>
+  transmute(
+    date_range_start, date_range_end,
+    genuine_calls = as.double(calls_answered) - as.double(test_calls)
+  ) |>
+  arrange(date_range_start)
+
+# weekly_topic_dump has a real DATE column, call_date; filter on it directly.
+# Align the topic window to the two overlapping call-centre weeks (May 31-Jun 13)
+# rather than the Mon-Sun period, so themes match the call counts above.
+call_topics <- tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
+  filter(call_date >= as.Date("2026-05-31"), call_date <= as.Date("2026-06-13")) |>
+  mutate(call_topic = str_squish(statobject)) |>
+  count(call_topic, name = "topic_count") |>
+  collect() |>
+  mutate(topic_share = topic_count / sum(topic_count, na.rm = TRUE)) |>
+  arrange(desc(topic_count))
+
+# Values referenced in the prose, so the text cannot drift from the queries.
+latest_ytd <- ytd_series$ytd_unique_users[ytd_series$week_end == as.Date("2026-06-14")]
+launch_ytd <- ytd_series$ytd_unique_users[1]
+pre_period_ytd <- ytd_series$ytd_unique_users[ytd_series$week_end == as.Date("2026-05-31")]
+net_new_fortnight <- latest_ytd - pre_period_ytd
+rolling_latest <- tail(auth_daily$rolling_365d_unique_users[!is.na(auth_daily$rolling_365d_unique_users)], 1)
+
+est_sessions_fortnight <- sum(sessions_series$est_sessions[sessions_series$week_end %in% as.Date(c("2026-06-07", "2026-06-14"))])
+success_latest <- sessions_series$success_rate[sessions_series$week_end == as.Date("2026-06-14")]
+success_prev <- sessions_series$success_rate[sessions_series$week_end == as.Date("2026-06-07")]
+
+total_app_signins <- sum(app_signins$total_logins)
+iris <- app_signins |> filter(service_name == "IRIS")
+iris_reach <- app_ytd_reach$ytd_unique_users[app_ytd_reach$application_name == iris$application_name]
+vac <- app_signins |> filter(str_detect(application_name, "VAC"))
+
+sms_share <- mfa_mix$share[mfa_mix$mfa_type == "sms_otp"]
+email_share <- mfa_mix$share[mfa_mix$mfa_type == "email_otp"]
+
+cc_genuine <- sum(call_activity$genuine_calls)
+# Label by the week-ending dates of the overlapping call-centre weeks (the weeks
+# are Sun-Sat, so a single start-to-end span would bleed into May). Strip the
+# zero-padding %d produces, e.g. "June 6 and June 13".
+fmt_day <- function(d) paste0(format(d, "%B "), as.integer(format(d, "%d")))
+cc_label <- paste(vapply(sort(call_activity$date_range_end), fmt_day, character(1)),
+                  collapse = " and ")
+```
+
+**Reporting period: weeks of June 1-14, 2026.**
+
+This first fortnightly CanadaLogin review covers how many people are reaching
+CanadaLogin, how many sign-ins they are completing, which public services they
+are using, and how reliably the service performed over the past two weeks.
+
+Growth remained the headline. Cumulative unique users for the year reached
+**`r comma(latest_ytd)`**, up **`r comma(net_new_fortnight)`** over the fortnight
+and more than double the **`r comma(launch_ytd)`** recorded in the first week
+after launch. The curve below shows steady, uninterrupted adoption since
+CanadaLogin went live in April. This count is account-wide and includes internal
+CanadaLogin usage, so it is not limited to public traffic.
+
+```{r headline-graph}
+ytd_plot <- ytd_series |>
+  mutate(is_current = week_end == max(week_end))
+
+headline_plot <- ggplot(ytd_plot, aes(week_end, ytd_unique_users)) +
+  geom_vline(
+    data = rp_launches, aes(xintercept = first_seen),
+    color = colors$greyscale[3], linetype = "dashed", linewidth = 0.4
+  ) +
+  geom_text(
+    data = rp_launches,
+    aes(x = first_seen, y = 0.03 * max(ytd_plot$ytd_unique_users), label = onboard_label),
+    hjust = rp_launches$label_hjust, vjust = 0, size = 2.8,
+    color = colors$greyscale[2], lineheight = 0.9
+  ) +
+  geom_line(color = colors$canada, linewidth = 1) +
+  geom_point(color = colors$canada, size = 1.6) +
+  geom_point(
+    data = subset(ytd_plot, is_current),
+    color = colors$highlight[1], size = 3.2
+  ) +
+  geom_text(
+    data = subset(ytd_plot, is_current),
+    aes(label = comma(ytd_unique_users)),
+    color = colors$highlight[1], vjust = -1, fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_x_date(breaks = ytd_plot$week_end, date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Unique users (year to date)",
+    title = "CanadaLogin reach continues to climb",
+    subtitle = "Cumulative unique users for the year, by week since launch"
+  )
+
+add_cds_logo(headline_plot)
+```
+
+Behind that cumulative reach, weekly sign-in activity held steady. Using a newly
+documented method, we estimate roughly **`r comma(round(est_sessions_fortnight, -1))`**
+completed CanadaLogin sign-in sessions over the two weeks - a session being one
+person getting all the way through the sign-in flow, however many steps it took.
+On the services side, the fortnight brought
+**`r comma(total_app_signins)`** sign-ins to public-facing services. **IRIS**,
+run by PrairiesCan, carried the bulk with **`r comma(iris$total_logins)`**
+sign-ins and has now reached **`r comma(iris_reach)`** distinct users this year.
+**VAC Healthshare**, operated by Veterans Affairs Canada, added
+**`r comma(vac$total_logins)`** sign-ins since joining on June 9 - the second
+public service now driving steady volume.
+
+```{r adoption-graph}
+app_plot <- app_signins |>
+  mutate(
+    is_new = application_name %in% new_relying_parties$application_name,
+    # Name and department on separate lines so labels stay narrow.
+    label = paste0(service_name, if_else(is_new, " (new)", ""), "\n", operator)
+  )
+
+adoption_plot <- ggplot(app_plot, aes(reorder(label, total_logins), total_logins, fill = is_new)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = comma(total_logins)), hjust = -0.15, size = 3.6) +
+  coord_flip() +
+  scale_fill_manual(values = c(`FALSE` = colors$canada, `TRUE` = colors$highlight[1])) +
+  scale_y_continuous(labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.18))) +
+  guides(fill = "none") +
+  theme_bw() +
+  labs(
+    x = NULL, y = "Sign-ins over the fortnight",
+    title = "Sign-ins by application, weeks of June 1-14",
+    subtitle = "Veterans Affairs' VAC Healthshare joined June 9"
+  )
+
+add_cds_logo(adoption_plot)
+```
+
+The service performed reliably. The weekly sign-in success rate climbed to
+**`r percent(success_latest, accuracy = 1)`** in the week ending June 14, up from
+**`r percent(success_prev, accuracy = 1)`** the week before and back to its
+strongest readings since launch. Multi-factor authentication stayed near-universal
+in success at **`r percent(mfa_success_rate, accuracy = 1)`**, with text-message
+codes the dominant second factor (about **`r percent(sms_share, accuracy = 1)`** of
+challenges) followed by email codes (**`r percent(email_share, accuracy = 1)`**).
+The call centre handled **`r cc_genuine`** genuine calls across the two most recent
+call-centre weeks (ending `r cc_label`; test calls excluded) - volumes remain very
+low - with callers typically asking how to sign in to a service that uses
+CanadaLogin.
+
+```{r teardown}
+DBI::dbDisconnect(con)
+```
