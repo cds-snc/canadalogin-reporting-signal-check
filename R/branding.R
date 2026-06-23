@@ -29,25 +29,62 @@ cds_logo_path <- function() {
     present <- present[file.exists(present)]
     if (length(present) > 0) return(sample(present, 1))
   }
-  stop("CDS logo not found in img/ (EN_Square+CANADA.jpg / FR_Square+CANADA.jpg)", call. = FALSE)
+  stop(
+    "CDS logo not found in img/ ",
+    "(EN_Square+CANADA.jpg / FR_Square+CANADA.jpg)",
+    call. = FALSE
+  )
 }
 
 # Overlay the logo flush in a corner. `position` is "top-right" (default),
 # "bottom-left", or "top-left". `height` is the logo height as a fraction of the
 # figure; width is generous so the height is what constrains the (portrait) logo,
 # keeping it small and undistorted.
-add_cds_logo <- function(plot, position = c("top-right", "bottom-left", "top-left"), height = 0.13) {
+add_cds_logo <- function(
+    plot,
+    position = c(
+      "top-right", "bottom-left",
+      "top-left", "bottom-right", "all"
+    ),
+    height = 0.13) {
   position <- match.arg(position)
-  corner <- switch(position,
-    "top-right"   = list(x = 0.995, y = 0.995, hjust = 1, vjust = 1, halign = 1, valign = 1),
-    "bottom-left" = list(x = 0.005, y = 0.005, hjust = 0, vjust = 0, halign = 0, valign = 0),
-    "top-left"    = list(x = 0.005, y = 0.995, hjust = 0, vjust = 1, halign = 0, valign = 1)
-  )
-  cowplot::ggdraw(plot) +
-    cowplot::draw_image(
-      cds_logo_path(),
-      x = corner$x, y = corner$y, hjust = corner$hjust, vjust = corner$vjust,
-      halign = corner$halign, valign = corner$valign,
-      width = 0.4, height = height
+
+  corners <- list(
+    "top-right" = list(
+      x = 0.995, y = 0.995,
+      hjust = 1, vjust = 1, halign = 1, valign = 1
+    ),
+    "bottom-left" = list(
+      x = 0.005, y = 0.005,
+      hjust = 0, vjust = 0, halign = 0, valign = 0
+    ),
+    "top-left" = list(
+      x = 0.005, y = 0.995,
+      hjust = 0, vjust = 1, halign = 0, valign = 1
+    ),
+    "bottom-right" = list(
+      x = 0.995, y = 0.005,
+      hjust = 1, vjust = 0, halign = 1, valign = 0
     )
+  )
+
+  if (position == "all") {
+    placements <- corners
+  } else {
+    placements <- corners[position]
+  }
+
+  result <- cowplot::ggdraw(plot)
+  for (corner in placements) {
+    result <- result +
+      cowplot::draw_image(
+        cds_logo_path(),
+        x = corner$x, y = corner$y,
+        hjust = corner$hjust, vjust = corner$vjust,
+        halign = corner$halign,
+        valign = corner$valign,
+        width = 0.4, height = height
+      )
+  }
+  result
 }
