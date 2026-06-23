@@ -79,7 +79,8 @@ auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
     unique_users = as.double(unique_users),
     successful_logins = as.double(successful_logins),
     failed_logins = as.double(failed_logins),
-    ytd_unique_users = as.double(ytd_unique_users)
+    ytd_unique_users = as.double(ytd_unique_users),
+    rolling_365d_unique_users = as.double(rolling_365d_unique_users)
   ) |>
   collect() |>
   arrange(day)
@@ -137,6 +138,47 @@ ggplot(ytd, aes(week_end, ytd_unique_users)) +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(x = NULL, y = "YTD unique users", title = "YTD unique users since launch")
+```
+
+## Rolling 365-day unique users (true trailing-window reach)
+
+`rolling_365d_unique_users` is a stored distinct-user count over the trailing 365
+days, so unlike YTD it does not reset at the calendar boundary -- this is the
+metric the headline should migrate to once it has enough history (and before YTD's
+~Jan 2027 reset). It is null before its 2026-06-13 implementation date, so the
+series starts there rather than at launch.
+
+```{r rolling-365}
+# Take each week's last available day, not the max: a trailing-365 count can fall
+# once users age out past 365 days, so max() would not equal the week-ending value.
+# (It currently tracks YTD because the window still reaches back before launch.)
+rolling365 <- auth_daily |>
+  filter(!is.na(rolling_365d_unique_users)) |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(
+    rolling_365d_unique_users = rolling_365d_unique_users[which.max(day)],
+    .groups = "drop"
+  ) |>
+  arrange(week_end)
+
+print(rolling365, n = 500)
+
+ggplot(rolling365, aes(week_end, rolling_365d_unique_users)) +
+  geom_line(color = colors$canada) +
+  geom_point(
+    data = subset(rolling365, week_end == week_end[length(week_end)]),
+    color = colors$highlight[1], size = 3
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  scale_x_date(breaks = rolling365$week_end, date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Rolling 365-day unique users",
+       title = "Rolling 365-day unique users")
 ```
 
 ## Sign-in success rate (weekly)
