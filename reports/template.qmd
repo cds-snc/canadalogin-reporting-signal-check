@@ -1,0 +1,148 @@
+---
+title: "CanadaLogin - Signal Check"
+author: "EDCP Data and Research Team"  # example@cds-snc.ca
+date: "2026-01-01"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("../R/branding.R")
+source("../R/colours.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(scales)
+})
+
+report_date <- as.Date("2026-01-01")
+```
+
+**Reporting period: weeks of January 1-14, 2026.**
+
+This is a style template for the biweekly signal check. The graphs below
+demonstrate the report's visual conventions: brand colours, CDS logo placement,
+watermark, `theme_cds()` typography, and axis formatting.
+
+The first graph is a time-series line chart, the format used for the headline
+metric each report. The most recent data point is called out in brand red with a
+bold label.
+
+```{r headline-graph}
+#| fig-alt: |
+#|   Line chart of US personal savings rate from 1967 to 2015, used as a
+#|   placeholder for the headline unique-users growth curve. The final data
+#|   point is highlighted in red.
+
+econ <- economics |>
+  filter(date >= as.Date("2010-01-01")) |>
+  mutate(is_current = date == max(date))
+
+headline_plot <- ggplot(econ, aes(date, psavert)) +
+  geom_line(color = colors$brand["blue"], linewidth = 1) +
+  geom_point(
+    data = subset(econ, is_current),
+    color = colors$brand["red"], size = 3.2
+  ) +
+  geom_text(
+    data = subset(econ, is_current),
+    aes(label = paste0(psavert, "%")),
+    color = colors$brand["red"], vjust = -1, fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  theme_cds() +
+  labs(
+    x = NULL, y = "Personal savings rate (%)",
+    title = "Placeholder headline metric over time",
+    subtitle = "US personal savings rate (economics dataset), 2010 onward"
+  )
+
+add_cds_logo(add_watermark(headline_plot, date = report_date))
+```
+
+The second graph is a horizontal bar chart, the format used for comparing
+categories side by side. One bar is highlighted in brand orange to show how a
+new or notable entry can be called out.
+
+```{r adoption-graph}
+#| fig-alt: |
+#|   Horizontal bar chart of vehicle count by manufacturer from the mpg
+#|   dataset, used as a placeholder for sign-ins by application. Bars are
+#|   coloured in brand blue, with one highlighted in orange as a new entry.
+
+top_makes <- mpg |>
+  count(manufacturer, name = "n_models") |>
+  slice_max(n_models, n = 8) |>
+  mutate(highlight = manufacturer == "audi")
+
+adoption_plot <- ggplot(
+  top_makes,
+  aes(reorder(manufacturer, n_models), n_models, fill = highlight)
+) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = n_models), hjust = -0.15, size = 3.6) +
+  coord_flip() +
+  scale_fill_manual(
+    values = c("FALSE" = unname(colors$brand["blue"]), "TRUE" = unname(colors$brand_action["orange"]))
+  ) +
+  scale_y_continuous(
+    limits = c(0, NA), expand = expansion(mult = c(0, 0.18))
+  ) +
+  guides(fill = "none") +
+  theme_cds() +
+  labs(
+    x = NULL, y = "Vehicle count",
+    title = "Placeholder adoption by category",
+    subtitle = "Top manufacturers by model count (mpg dataset)"
+  )
+
+add_cds_logo(add_watermark(adoption_plot, date = report_date))
+```
+
+The third graph is a dense weekly time series, showing how `theme_cds()` handles
+a long date axis with many data points. The line uses brand forest green to
+demonstrate a second single-series colour option beyond the headline blue.
+
+```{r trend-graph}
+#| fig-alt: |
+#|   Line chart of average diamond price by week from 2008 to 2014, used as a
+#|   placeholder for a weekly sign-in success rate trend. The line is coloured
+#|   in brand forest green.
+
+diamond_weekly <- diamonds |>
+  mutate(
+    price_bin = cut(carat, breaks = seq(0, 6, 0.5)),
+    week = as.Date(cut(as.Date("2008-01-01") + row_number() %% (365 * 6), "week"))
+  ) |>
+  group_by(week) |>
+  summarise(avg_price = mean(price), .groups = "drop") |>
+  filter(!is.na(week))
+
+trend_plot <- ggplot(diamond_weekly, aes(week, avg_price)) +
+  geom_line(color = colors$brand_base["forest"], linewidth = 1) +
+  geom_point(color = colors$brand_base["forest"], size = 1.2) +
+  scale_y_continuous(
+    labels = dollar, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  theme_cds() +
+  labs(
+    x = NULL, y = "Average price ($)",
+    title = "Placeholder weekly trend",
+    subtitle = "Average diamond price by week (diamonds dataset)"
+  )
+
+add_cds_logo(add_watermark(trend_plot, date = report_date))
+```
+
+Reports typically close with a short one-liner summarizing any low-volume
+supplementary data that was not graphed above.
