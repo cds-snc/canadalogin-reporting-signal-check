@@ -297,6 +297,57 @@ ggplot(signins_stacked, aes(week_end, total_logins, fill = service_label)) +
        title = "Weekly sign-ins by public application (stacked)")
 ```
 
+## Adoption curve by application (days since each app's own launch)
+
+Cumulative distinct users (`ytd_unique_users`) re-based so every public app starts
+at day 1 on its own launch date, capped at the first 90 days. Re-basing to
+days-since-launch lines the apps up head-to-head regardless of when they onboarded,
+so we can compare how quickly each builds reach in its first three months.
+Internal/system apps excluded. (Apps that launched recently only extend a short way
+along the x-axis; the 90-day cap is forward-looking.)
+
+```{r adoption-curve}
+adoption_curve <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    from_date >= as.Date(launch_week_start),
+    from_date <= as.Date(period_end),
+    !application_name %in% internal_apps
+  ) |>
+  transmute(
+    application_name,
+    day = as.Date(from_date),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  # One cumulative value per app-day (ytd is monotonic within a day, so max is safe).
+  group_by(application_name, day) |>
+  summarise(unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  group_by(application_name) |>
+  mutate(
+    # Each app's launch is its first appearance in app_login_counts; t = 1 there.
+    app_launch = min(day),
+    days_since_launch = as.integer(day - app_launch) + 1L
+  ) |>
+  ungroup() |>
+  filter(days_since_launch <= 90) |>
+  left_join(relying_parties, by = "application_name") |>
+  arrange(service_name, days_since_launch)
+
+print(adoption_curve, n = 500)
+
+ggplot(adoption_curve, aes(days_since_launch, unique_users, color = service_name)) +
+  geom_line() +
+  geom_point(size = 1.2) +
+  scale_color_manual(values = colors$primary) +
+  scale_y_continuous(labels = comma, limits = c(0, NA)) +
+  scale_x_continuous(limits = c(1, 90), breaks = c(1, seq(15, 90, 15))) +
+  theme_bw() +
+  labs(x = "Days since app launch", y = "Cumulative unique users",
+       color = "Service",
+       title = "Adoption curve by public application",
+       subtitle = "Cumulative distinct users, re-based to each app's launch day (first 90 days)")
+```
+
 ## Applications per credential (cross-service reach, weekly)
 
 Sum of each app's cumulative YTD distinct users / overall CanadaLogin YTD distinct
