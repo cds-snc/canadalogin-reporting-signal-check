@@ -1,6 +1,7 @@
-application_name,service_name,operator,is_internal
-IRIS - PRC - Prod,IRIS,PrairiesCan,FALSE
-VAC Healthshare - VAC - Prod,VAC Healthshare,Veterans Affairs Canada,FALSE
-Flow Application,Flow Application,CanadaLogin (internal),TRUE
-GCS Migration Solution,GCS Migration Solution,CanadaLogin (internal),TRUE
-GC Sign In - Profile Management App,Profile Management,CanadaLogin (internal),TRUE
+application_name,service_name,operator,is_internal,launch_date
+IRIS - PRC - Prod,IRIS,PrairiesCan,FALSE,2026-04-22
+VAC Healthshare - VAC - Prod,VAC Healthshare,Veterans Affairs Canada,FALSE,2026-06-09
+GC Digital Talent - TBS - Pilot - Prod,GC Digital Talent,Treasury Board of Canada Secretariat,TRUE,2026-06-19
+Flow Application,Flow Application,CanadaLogin (internal),TRUE,2026-04-22
+GCS Migration Solution,GCS Migration Solution,CanadaLogin (internal),TRUE,2026-04-22
+GC Sign In - Profile Management App,Profile Management,CanadaLogin (internal),TRUE,2026-04-22

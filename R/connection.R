@@ -36,24 +36,29 @@ check_packages <- function() {
   invisible(TRUE)
 }
 
+# Relying-party registry -----------------------------------------------------
+
+load_relying_parties <- function() {
+  for (p in c("data/relying_parties.csv", "../data/relying_parties.csv")) {
+    if (file.exists(p)) {
+      return(utils::read.csv(p, stringsAsFactors = FALSE))
+    }
+  }
+  stop("relying_parties.csv not found", call. = FALSE)
+}
+
 # Constants ------------------------------------------------------------------
 
-# CanadaLogin launched on this date; time-series graphs start at the launch
-# week rather than a fixed trailing window until there is enough history.
 launch_date <- as.Date("2026-04-22")
 launch_week_start <- as.Date("2026-04-20")  # Monday of the launch week
 
-# Internal / system applications, excluded from public-adoption reporting.
-internal_applications <- c(
-  "Flow Application",
-  "GCS Migration Solution",
-  "GC Sign In - Profile Management App"
-)
+internal_applications <- {
+  rp <- load_relying_parties()
+  rp$application_name[rp$is_internal]
+}
 
 # Configuration --------------------------------------------------------------
 
-# Search upward for the project-root .env so this works whether sourced from the
-# project root (explore.qmd) or a subdirectory (reports/ renders from reports/).
 load_config <- function() {
   for (p in c(".env", "../.env", "../../.env")) {
     if (file.exists(p)) {
@@ -69,8 +74,6 @@ load_config <- function() {
 connect_athena <- function() {
   check_packages()
   load_config()
-  # Silence RAthena's per-query "Data scanned: X Bytes" INFO output; it is noise
-  # in the rendered workbook and reports. Affects console output only, not results.
   RAthena::RAthena_options(verbose = FALSE)
   DBI::dbConnect(
     RAthena::athena(),
@@ -78,21 +81,6 @@ connect_athena <- function() {
     region_name    = Sys.getenv("AWS_REGION", "ca-central-1"),
     s3_staging_dir = Sys.getenv("ATHENA_S3_STAGING_DIR")
   )
-}
-
-# Relying-party registry -----------------------------------------------------
-
-# Maps each application_name to a clean service name, its operating department,
-# and whether it is an internal/system app. This is the single place to track
-# who runs each relying party; data/relying_parties.csv is hand-maintained.
-# Searches upward so it loads from the project root or a subdirectory.
-load_relying_parties <- function() {
-  for (p in c("data/relying_parties.csv", "../data/relying_parties.csv")) {
-    if (file.exists(p)) {
-      return(utils::read.csv(p, stringsAsFactors = FALSE))
-    }
-  }
-  stop("relying_parties.csv not found", call. = FALSE)
 }
 
 # Date helpers ---------------------------------------------------------------
