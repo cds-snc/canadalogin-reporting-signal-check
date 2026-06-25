@@ -280,13 +280,21 @@ latest_totals <- signins_weekly |>
   mutate(share = total_logins / sum(total_logins, na.rm = TRUE))
 major_apps <- latest_totals$service_name[latest_totals$share >= 0.01]
 
+launch_order <- relying_parties |>
+  filter(service_name %in% major_apps) |>
+  arrange(launch_date) |>
+  pull(service_name) |>
+  unique()
+stack_levels <- c(launch_order, "Other")
+
 signins_stacked <- signins_weekly |>
   mutate(service_label = if_else(service_name %in% major_apps, service_name, "Other")) |>
   group_by(service_label, week_end) |>
-  summarise(total_logins = sum(total_logins, na.rm = TRUE), .groups = "drop")
+  summarise(total_logins = sum(total_logins, na.rm = TRUE), .groups = "drop") |>
+  mutate(service_label = factor(service_label, levels = stack_levels))
 
 ggplot(signins_stacked, aes(week_end, total_logins, fill = service_label)) +
-  geom_col() +
+  geom_col(position = position_stack(reverse = TRUE)) +
   scale_fill_manual(values = c(colors$primary, unname(colors$missions$dark))) +
   scale_y_continuous(labels = comma, limits = c(0, NA),
                      expand = expansion(mult = c(0, 0.05))) +
