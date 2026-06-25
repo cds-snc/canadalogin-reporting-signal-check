@@ -116,11 +116,14 @@ add_cds_logo <- function(
 
 # Light watermark in the bottom-right corner with the report name and date.
 # `date` should be a string like "June 25, 2026" or a Date object (formatted
-# automatically). Uses the brand font when available, grey40 at a small size so
-# it stays readable but unobtrusive.
-add_watermark <- function(plot, date = Sys.Date()) {
+# automatically). `edition` is the report's serial number; when supplied it is
+# appended to the report name (e.g. "CanadaLogin Signal Check #1 // ..."), and
+# omitted when NULL. Uses the brand font when available, grey40 at a small size
+# so it stays readable but unobtrusive.
+add_watermark <- function(plot, date = Sys.Date(), edition = NULL) {
   if (inherits(date, "Date")) date <- format(date, "%B %e, %Y")
-  label <- paste0("CanadaLogin Signal Check // ", trimws(date))
+  edition_tag <- if (!is.null(edition)) paste0(" #", edition) else ""
+  label <- paste0("CanadaLogin Signal Check", edition_tag, " // ", trimws(date))
   font_family <- if (register_cds_fonts()) cds_font else ""
   current_margin <- ggplot2::calc_element("plot.margin", plot$theme)
   if (is.null(current_margin)) current_margin <- ggplot2::margin(5.5, 5.5, 5.5, 5.5)

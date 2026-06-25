@@ -1,7 +1,10 @@
 ---
-title: "CanadaLogin - Signal Check"
+title: "CanadaLogin Signal Check"
+subtitle: "For the weeks of January 1-14"
 author: "EDCP Data and Research Team"  # example@cds-snc.ca
 date: "2026-01-01"
+params:
+  edition: 0
 format:
   html:
     embed-resources: true
@@ -26,8 +29,6 @@ suppressPackageStartupMessages({
 
 report_date <- as.Date("2026-01-01")
 ```
-
-**Reporting period: weeks of January 1-14, 2026.**
 
 This is a style template for the biweekly signal check. The graphs below
 demonstrate the report's visual conventions: brand colours, CDS logo placement,
@@ -66,7 +67,7 @@ headline_plot <- ggplot(econ, aes(date, psavert)) +
     subtitle = "US personal savings rate (economics dataset), 2010 onward"
   )
 
-add_cds_logo(add_watermark(headline_plot, date = report_date))
+add_cds_logo(add_watermark(headline_plot, date = report_date, edition = params$edition))
 ```
 
 The second graph is a horizontal bar chart, the format used for comparing
@@ -105,7 +106,7 @@ adoption_plot <- ggplot(
     subtitle = "Top manufacturers by model count (mpg dataset)"
   )
 
-add_cds_logo(add_watermark(adoption_plot, date = report_date))
+add_cds_logo(add_watermark(adoption_plot, date = report_date, edition = params$edition))
 ```
 
 The third graph is a dense weekly time series, showing how `theme_cds()` handles
@@ -141,7 +142,7 @@ trend_plot <- ggplot(diamond_weekly, aes(week, avg_price)) +
     subtitle = "Average diamond price by week (diamonds dataset)"
   )
 
-add_cds_logo(add_watermark(trend_plot, date = report_date))
+add_cds_logo(add_watermark(trend_plot, date = report_date, edition = params$edition))
 ```
 
 Reports typically close with a short one-liner summarizing any low-volume
