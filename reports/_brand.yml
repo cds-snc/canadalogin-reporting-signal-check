@@ -60,8 +60,7 @@ typography:
   # most often in Light and Semibold. Now also published as "Source Sans 3".
   fonts:
     # Weights used by document text: 400 body, 600 headings, 700 strong, plus
-    # italics for emphasis. Light (300) is dropped (base is 400, so nothing uses
-    # it). 
+    # italics for emphasis. Light (300) is dropped (base is 400, so nothing uses it)
     - family: Source Sans Pro
       source: google
       weight: [400, 600, 700]
