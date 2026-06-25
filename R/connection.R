@@ -1,8 +1,8 @@
 #' Athena connection and shared setup for the CanadaLogin Signal Check.
 #'
 #' This file holds ONLY non-analytical setup: the connection factory, a package
-#' check, pure date helpers, and constants for inspect.qmd. The data queries
-#' themselves are deliberately NOT here - they are written inline in inspect.qmd
+#' check, pure date helpers, and constants for explore.qmd. The data queries
+#' themselves are deliberately NOT here - they are written inline in explore.qmd
 #' and repeated verbatim in each report, so every report freezes the exact
 #' query that produced its numbers.
 #'
@@ -53,7 +53,7 @@ internal_applications <- c(
 # Configuration --------------------------------------------------------------
 
 # Search upward for the project-root .env so this works whether sourced from the
-# project root (inspect.qmd) or a subdirectory (reports/ renders from reports/).
+# project root (explore.qmd) or a subdirectory (reports/ renders from reports/).
 load_config <- function() {
   for (p in c(".env", "../.env", "../../.env")) {
     if (file.exists(p)) {
