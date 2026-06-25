@@ -86,6 +86,16 @@ add_cds_logo <- function(
     placements <- corners[position]
   }
 
+  # Add margin on the sides where the logo will sit so it lands in whitespace
+  # rather than overlapping the panel. The margin matches the logo height.
+  margin_pt <- grid::unit(height * 55, "pt")
+  sides <- unique(sub("-.*", "", names(placements)))
+  current_margin <- ggplot2::calc_element("plot.margin", plot$theme)
+  if (is.null(current_margin)) current_margin <- ggplot2::margin(5.5, 5.5, 5.5, 5.5)
+  if ("top" %in% sides) current_margin[1] <- current_margin[1] + margin_pt
+  if ("bottom" %in% sides) current_margin[3] <- current_margin[3] + margin_pt
+  plot <- plot + ggplot2::theme(plot.margin = current_margin)
+
   result <- cowplot::ggdraw(plot)
   for (corner in placements) {
     result <- result +
@@ -101,6 +111,31 @@ add_cds_logo <- function(
   result
 }
 
+
+# Watermark -------------------------------------------------------------------
+
+# Light watermark in the bottom-right corner with the report name and date.
+# `date` should be a string like "June 25, 2026" or a Date object (formatted
+# automatically). Uses the brand font when available, grey40 at a small size so
+# it stays readable but unobtrusive.
+add_watermark <- function(plot, date = Sys.Date()) {
+  if (inherits(date, "Date")) date <- format(date, "%B %e, %Y")
+  label <- paste0("CanadaLogin Signal Check // ", trimws(date))
+  font_family <- if (register_cds_fonts()) cds_font else ""
+  current_margin <- ggplot2::calc_element("plot.margin", plot$theme)
+  if (is.null(current_margin)) current_margin <- ggplot2::margin(5.5, 5.5, 5.5, 5.5)
+  current_margin[3] <- current_margin[3] + grid::unit(5, "pt")
+  plot <- plot + ggplot2::theme(plot.margin = current_margin)
+  cowplot::ggdraw(plot) +
+    cowplot::draw_text(
+      label,
+      x = 0.99, y = 0.01,
+      hjust = 1, vjust = 0,
+      size = 7,
+      colour = "grey65",
+      family = font_family
+    )
+}
 
 # Brand typography ------------------------------------------------------------
 
