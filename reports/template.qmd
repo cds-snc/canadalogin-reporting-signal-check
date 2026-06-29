@@ -109,9 +109,9 @@ adoption_plot <- ggplot(
 add_cds_logo(add_watermark(adoption_plot, date = report_date, edition = params$edition))
 ```
 
-The third graph is a dense weekly time series, showing how `theme_cds()` handles
-a long date axis with many data points. The line uses brand forest green to
-demonstrate a second single-series colour option beyond the headline blue.
+The third graph is a dense weekly time series. It shows how `theme_cds()` handles
+a long date axis with many data points. The line uses brand forest green, a
+second single-series colour option beyond the headline blue.
 
 ```{r trend-graph}
 #| fig-alt: |
@@ -145,7 +145,7 @@ trend_plot <- ggplot(diamond_weekly, aes(week, avg_price)) +
 add_cds_logo(add_watermark(trend_plot, date = report_date, edition = params$edition))
 ```
 
-Reports typically close with a short one-liner summarizing any low-volume
-supplementary data that was not graphed above.
+Reports typically close with a short one-liner that sums up any low-volume
+supplementary data the report did not graph above.
 
 {{< include _footer.qmd >}}

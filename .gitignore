@@ -8,6 +8,7 @@
 
 # Rendered deliverables (source-only repo; the all-in-one HTML is shared, not committed)
 reports/*.html
+reports/out/
 *.html
 
 # R / RStudio
