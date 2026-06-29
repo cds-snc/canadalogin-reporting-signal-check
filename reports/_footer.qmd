@@ -1,5 +1,20 @@
+```{r footer-env}
+#| echo: false
+#| message: false
+#| warning: false
+
+# Load the .env so we can use the links in the footer
+# We store the links there because some of the links themselves contain secrets
+for (footer_env_path in c(".env", "../.env", "../../.env")) {
+  if (file.exists(footer_env_path)) {
+    dotenv::load_dot_env(footer_env_path)
+    break
+  }
+}
+```
+
 ## Additional resources
 
-- [CanadaLogin Power BI dashboard](https://app.powerbi.com/links/9IJ2hMLQ_C?ctid=9ed55846-8a81-4246-acd8-b1a01abfc0d1&pbi_source=linkShare) - the live metrics dashboard (accessible only on your ESDC laptop).
-- [CanadaLogin Metrics Cookbook](https://cds-snc.github.io/canadalogin-metrics-cookbook/) - how each metric is defined and calculated, and what data is available.
-- [Signal Check report archive](https://drive.google.com/drive/folders/16UPl-Hiu-Ba8Xzmt8rni56s0CYUPiI7d?usp=sharing) - past editions of this report.
+- **CanadaLogin metrics dashboard** ([Power BI](`r Sys.getenv("FOOTER_DASHBOARD_URL")`)) - the live dashboard, accessible only on your ESDC laptop.
+- **CanadaLogin Metrics Cookbook** ([Cookbook](https://cds-snc.github.io/canadalogin-metrics-cookbook/) | [Repo](https://github.com/cds-snc/canadalogin-metrics-cookbook)) - how each metric is defined and calculated, and what data is available.
+- **Signal Check report archive** ([CDS Google Drive](`r Sys.getenv("FOOTER_ARCHIVE_GDRIVE_URL")`) | [ESDC SharePoint](`r Sys.getenv("FOOTER_ARCHIVE_SHAREPOINT_URL")`)) - past editions of this report.
