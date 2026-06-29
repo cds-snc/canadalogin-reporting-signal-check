@@ -1,5 +1,5 @@
 ---
-title: "CanadaLogin Signal Check"
+title: "CanadaLogin Signal Check" 
 subtitle: "For the weeks of January 1-14"
 author: "EDCP Data and Research Team"  # example@cds-snc.ca
 date: "2026-01-01"
@@ -147,3 +147,5 @@ add_cds_logo(add_watermark(trend_plot, date = report_date, edition = params$edit
 
 Reports typically close with a short one-liner summarizing any low-volume
 supplementary data that was not graphed above.
+
+{{< include _footer.qmd >}}
