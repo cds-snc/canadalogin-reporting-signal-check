@@ -18,11 +18,13 @@ unless they no longer work or they're misleading / broken.
 ```{r setup}
 source("R/connection.R")
 source("R/colours.R")
+source("R/preflight.R")
 suppressPackageStartupMessages({
   library(dplyr)
   library(dbplyr)
   library(stringr)
   library(tidyr)
+  library(glue)
   library(ggplot2)
   library(scales)
   library(ggbrick)
@@ -33,6 +35,15 @@ con <- connect_athena()
 # Relying-party registry: application_name -> service name, operator, internal flag.
 relying_parties <- load_relying_parties()
 internal_apps <- relying_parties$application_name[relying_parties$is_internal]
+```
+
+## Preflight Safety Check
+
+Run a check to ensure the data sources are up to date. Prints a checklist of each 
+assumption and halts the workbook if any failed.
+
+```{r preflight}
+run_preflight_safety_check(con)
 ```
 
 ## Resolve the reporting period (two weeks)
