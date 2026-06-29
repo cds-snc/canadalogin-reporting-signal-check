@@ -1,0 +1,390 @@
+---
+title: "CanadaLogin Signal Check"
+subtitle: "For the weeks of June 15-28"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-06-29"
+params:
+  edition: 1
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries below are inlined and frozen to hardcoded June 15-28, 2026 date bounds
+# (the two complete Mon-Sun weeks ending on the most recent Sunday). This report
+# is a point-in-time record and must reproduce identically forever, so the bounds
+# and the internal-app list are literals rather than computed.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(stringr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+  library(ggbrick)
+})
+
+con <- connect_athena()
+
+# Watermark date: the period-ending Sunday.
+report_date <- as.Date("2026-06-28")
+
+# Relying-party registry: clean service names, operating department, internal
+# flag. The internal exclusion is inlined as a frozen literal list so this
+# report's analytical result cannot change if the registry is later reclassified.
+# This list reflects the registry on 2026-06-29 and includes the GC Digital Talent
+# pilot (internal) and the migration simulator, so app-level views show only the
+# public GC Digital Talent production app, not the pilot.
+relying_parties <- load_relying_parties()
+internal_apps <- c(
+  "Flow Application",
+  "GCS Migration Solution",
+  "GC Sign In - Profile Management App",
+  "GC Digital Talent - TBS - Pilot - Prod",
+  "GCS SIC Migration RP Simulator - PRD"
+)
+
+# Headline series: account-wide cumulative YTD unique users by week, launch
+# through the period end. The ytd column is monotonic within a week, so the
+# week's value is its max; daily unique_users counts user-days and must not be
+# summed. Time-series graphs plot weekly points even though the period is two
+# weeks, so this spans from the launch week, not just the period. Plot each week
+# at its last day (the Sunday week-ending date).
+auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  filter(from_date >= as.Date("2026-04-20"), from_date <= as.Date("2026-06-28")) |>
+  transmute(
+    day = as.Date(from_date),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  arrange(day)
+
+ytd_series <- auth_daily |>
+  mutate(week_start = monday_of(day)) |>
+  group_by(week_start) |>
+  summarise(ytd_unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  mutate(week_end = week_start + 6) |>
+  arrange(week_end)
+
+# Annotation lines for the headline: the two launches the reader should connect
+# to the curve. CanadaLogin's own launch (Apr 22) anchors the start; GC Digital
+# Talent's public production launch (Jun 25) is the new, much larger relying
+# party that drives the final week's jump.
+headline_launches <- data.frame(
+  date = as.Date(c("2026-04-22", "2026-06-25")),
+  label = c("CanadaLogin\nlaunched Apr 22", "GC Digital Talent\nlaunched Jun 25"),
+  # Apr 22 sits at the far left, so its label reads to the right of the line;
+  # Jun 25 sits near the right, so its label reads to the left.
+  label_hjust = c(-0.04, 1.04)
+)
+
+# Adoption curve: cumulative distinct users (ytd_unique_users) re-based so every
+# public app starts at day 1 on its own first appearance, capped at the first 90
+# days. Re-basing lines the apps up head-to-head regardless of when they
+# onboarded. Internal/system apps excluded (the literal list above), so the GC
+# Digital Talent pilot is not double-counted against the public app.
+adoption_curve <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    from_date >= as.Date("2026-04-20"),
+    from_date <= as.Date("2026-06-28"),
+    !application_name %in% internal_apps
+  ) |>
+  transmute(
+    application_name,
+    day = as.Date(from_date),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  # One cumulative value per app-day (ytd is monotonic within a day, so max is safe).
+  group_by(application_name, day) |>
+  summarise(unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  group_by(application_name) |>
+  mutate(
+    app_launch = min(day),
+    days_since_launch = as.integer(day - app_launch) + 1L
+  ) |>
+  ungroup() |>
+  filter(days_since_launch <= 90) |>
+  left_join(relying_parties, by = "application_name") |>
+  arrange(service_name, days_since_launch)
+
+# MFA factor mix over the period, restricted to the three public OTP delivery
+# methods (text, email, voice). For OTP types each challenge logs a "sent"
+# issuance, so "sent" is the challenge-volume measure (cookbook:
+# mfa-activity-by-factor). The other factors are internal-only or in testing
+# (FIDO2 security keys, push, TOTP, QR, knowledge questions) and passkeys are not
+# yet released, so they are deliberately excluded from this public-method view.
+otp_types <- c("sms_otp", "email_otp", "voice_otp")
+otp_labels <- c(
+  sms_otp = "Text message code",
+  email_otp = "Email code",
+  voice_otp = "Voice call code"
+)
+mfa_otp_mix <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date("2026-06-15"),
+    from_date <= as.Date("2026-06-28"),
+    result == "sent",
+    mfa_type %in% otp_types
+  ) |>
+  group_by(mfa_type) |>
+  summarise(challenges = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(share = challenges / sum(challenges)) |>
+  arrange(desc(challenges))
+
+# Call centre: weekly_activity_report stores date columns as strings (catalog:
+# cast to DATE when filtering); it is tiny (one row per week), so collect and
+# filter in R on parsed dates. Its weeks run Sunday-Saturday and the feed lags, so
+# they do not align to the Mon-Sun reporting period. We use the two most recent
+# loaded call-centre weeks (Jun 7-13 and Jun 14-20).
+call_activity <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
+  collect() |>
+  mutate(
+    date_range_start = as.Date(date_range_start),
+    date_range_end = as.Date(date_range_end)
+  ) |>
+  filter(
+    date_range_start >= as.Date("2026-06-07"),
+    date_range_end <= as.Date("2026-06-20")
+  ) |>
+  transmute(
+    date_range_start, date_range_end,
+    genuine_calls = as.double(calls_answered) - as.double(test_calls)
+  ) |>
+  arrange(date_range_start)
+
+# weekly_topic_dump has a real DATE column, call_date; filter on it directly.
+# Align the topic window to the same two call-centre weeks so themes match counts.
+call_topics <- tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
+  filter(call_date >= as.Date("2026-06-07"), call_date <= as.Date("2026-06-20")) |>
+  mutate(call_topic = str_squish(statobject)) |>
+  count(call_topic, name = "topic_count") |>
+  collect() |>
+  mutate(topic_share = topic_count / sum(topic_count, na.rm = TRUE)) |>
+  arrange(desc(topic_count))
+
+# Values referenced in the prose, so the text cannot drift from the queries.
+ytd_at <- function(week_end) {
+  ytd_series$ytd_unique_users[ytd_series$week_end == as.Date(week_end)]
+}
+latest_ytd <- ytd_at("2026-06-28")
+prev_week_ytd <- ytd_at("2026-06-21")
+pre_period_ytd <- ytd_at("2026-06-14")
+launch_ytd <- ytd_series$ytd_unique_users[1]
+net_new_period <- latest_ytd - pre_period_ytd
+net_new_final_week <- latest_ytd - prev_week_ytd
+
+# Per-app cumulative reach at day 1 and at the latest available day, for the prose.
+app_reach <- adoption_curve |>
+  group_by(service_name) |>
+  summarise(
+    day1 = unique_users[days_since_launch == 1],
+    last_day = max(days_since_launch),
+    latest = unique_users[which.max(days_since_launch)],
+    .groups = "drop"
+  )
+dt_day1 <- app_reach$day1[app_reach$service_name == "GC Digital Talent"]
+dt_latest <- app_reach$latest[app_reach$service_name == "GC Digital Talent"]
+iris_latest <- app_reach$latest[app_reach$service_name == "IRIS"]
+iris_days <- app_reach$last_day[app_reach$service_name == "IRIS"]
+
+sms_share <- mfa_otp_mix$share[mfa_otp_mix$mfa_type == "sms_otp"]
+email_share <- mfa_otp_mix$share[mfa_otp_mix$mfa_type == "email_otp"]
+voice_share <- mfa_otp_mix$share[mfa_otp_mix$mfa_type == "voice_otp"]
+
+cc_genuine <- sum(call_activity$genuine_calls)
+# Getting-started topics: what CanadaLogin is and how to create an account.
+cc_getting_started <- call_topics |>
+  filter(call_topic %in% c(
+    "What is CanadaLogin?", "How to Create a CanadaLogin Account"
+  ))
+cc_getting_started_share <- sum(cc_getting_started$topic_share)
+```
+
+One story dominates this edition. A large new service, GC Digital Talent, joined
+CanadaLogin during the period, and it is already the biggest relying party we have
+onboarded. The charts below show what it did to overall reach, how its first days
+compare with the services that came before it, and which sign-in methods people use
+today, with passkeys due to arrive next.
+
+GC Digital Talent changed the growth picture in a single week. Cumulative unique
+users for the year reached **`r comma(latest_ytd)`**, up **`r comma(net_new_period)`**
+over the two weeks, with almost all of that, **`r comma(net_new_final_week)`** users,
+landing in the final week as GC Digital Talent went live on June 25. That nearly
+doubled the **`r comma(prev_week_ytd)`** we had reached the week before, and is well
+above the **`r comma(launch_ytd)`** recorded in the first week after CanadaLogin
+launched in April. This count is account-wide and folds in internal CanadaLogin
+usage, so it is not limited to public traffic, but the size and timing of the jump
+point squarely at the new service.
+
+```{r headline-graph}
+#| fig-alt: |
+#|   Line chart of cumulative unique users for the year, by week, from late April
+#|   to late June 2026. The curve climbs steadily near 3,000 then roughly doubles
+#|   in the final week to about 7,000, with dashed markers for the CanadaLogin
+#|   launch in April and the GC Digital Talent launch on June 25.
+
+ytd_plot <- ytd_series |>
+  mutate(is_current = week_end == max(week_end))
+
+headline_plot <- ggplot(ytd_plot, aes(week_end, ytd_unique_users)) +
+  geom_vline(
+    data = headline_launches, aes(xintercept = date),
+    color = colors$greyscale[3], linetype = "dashed", linewidth = 0.4
+  ) +
+  geom_text(
+    data = headline_launches,
+    aes(x = date, y = 0.97 * max(ytd_plot$ytd_unique_users), label = label),
+    hjust = headline_launches$label_hjust, vjust = 1, size = 2.8,
+    color = colors$greyscale[2], lineheight = 0.9
+  ) +
+  geom_line(color = colors$brand["blue"], linewidth = 1) +
+  geom_point(color = colors$brand["blue"], size = 1.6) +
+  geom_point(
+    data = subset(ytd_plot, is_current),
+    color = colors$brand["red"], size = 3.2
+  ) +
+  geom_text(
+    data = subset(ytd_plot, is_current),
+    aes(label = comma(ytd_unique_users)),
+    color = colors$brand["red"], vjust = -1, fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_x_date(breaks = ytd_plot$week_end, date_labels = "%b %d") +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Unique users (year to date)",
+    title = "GC Digital Talent doubles CanadaLogin's reach",
+    subtitle = "Cumulative unique users for the year, by week since launch"
+  )
+
+add_cds_logo(add_watermark(headline_plot, date = report_date, edition = params$edition))
+```
+
+The next chart lines up each public service from its own launch day, and GC Digital
+Talent is in a different weight class. On its first day it reached
+**`r comma(dt_day1)`** distinct users and **`r comma(dt_latest)`** within four days,
+already more than **IRIS** has reached in its first **`r iris_days`** days
+(**`r comma(iris_latest)`**). IRIS and VAC Healthshare built their user bases
+gradually over weeks; GC Digital Talent arrived with one essentially overnight,
+which is what we would expect from a service migrating an established audience
+rather than recruiting one from scratch.
+
+```{r adoption-graph}
+#| fig-alt: |
+#|   Line chart of cumulative distinct users against days since each public
+#|   service's own launch, over the first 90 days. GC Digital Talent rises almost
+#|   vertically past 2,700 users in four days, far steeper than IRIS and VAC
+#|   Healthshare, which climb gradually over weeks.
+
+adoption_plot <- ggplot(
+  adoption_curve,
+  aes(days_since_launch, unique_users, color = service_name)
+) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.2) +
+  scale_color_manual(values = c(
+    "GC Digital Talent" = unname(colors$brand_action["orange"]),
+    "IRIS" = unname(colors$brand["blue"]),
+    "VAC Healthshare" = unname(colors$brand_base["forest"])
+  )) +
+  scale_y_continuous(labels = comma, limits = c(0, NA)) +
+  scale_x_continuous(limits = c(1, 90), breaks = c(1, seq(15, 90, 15))) +
+  theme_cds() +
+  labs(
+    x = "Days since the service launched", y = "Cumulative unique users",
+    color = NULL,
+    title = "A bigger service from day one",
+    subtitle = paste0(
+      "Cumulative distinct users, re-based to each service's launch day ",
+      "(first 90 days)"
+    )
+  )
+
+add_cds_logo(add_watermark(adoption_plot, date = report_date, edition = params$edition))
+```
+
+A new audience this size is a good moment to look at how people prove who they are.
+Today almost everyone uses a one-time code, and the split is close between text
+messages (**`r percent(sms_share, accuracy = 1)`** of code challenges) and email
+(**`r percent(email_share, accuracy = 1)`**), with voice calls a small remainder
+(**`r percent(voice_share, accuracy = 1)`**). We are setting this baseline now
+because passkeys, a faster and more phishing-resistant way to sign in, are
+releasing soon; the waffle below is the "before" picture we will measure that
+shift against.
+
+```{r mfa-graph}
+#| fig-alt: |
+#|   Waffle chart of 100 squares showing the mix of one-time-code sign-in methods.
+#|   Text message and email codes split the grid almost evenly at roughly half
+#|   each, with voice call codes a small slice of a few squares.
+
+# Round shares to whole percentage points, then nudge the largest so the squares
+# sum to exactly 100: a clean 10-per-layer waffle where one square = 1% of these
+# OTP challenges.
+mfa_waffle <- mfa_otp_mix |>
+  mutate(
+    method = unname(otp_labels[mfa_type]),
+    pct = round(share * 100)
+  )
+mfa_waffle$pct[which.max(mfa_waffle$pct)] <-
+  mfa_waffle$pct[which.max(mfa_waffle$pct)] + (100L - sum(mfa_waffle$pct))
+
+brand_font <- if (register_cds_fonts()) cds_font else ""
+
+# ggbrick's geom_waffle0 needs a non-factor fill (a factor trips its discrete
+# scale), so method is a plain character and `breaks` fixes the legend order.
+mfa_plot <- ggplot(mfa_waffle) +
+  geom_waffle0(aes(x = "MFA", y = pct, fill = method), bricks_per_layer = 10) +
+  coord_waffle(10) +
+  scale_fill_manual(
+    breaks = unname(otp_labels),
+    values = c(
+      "Text message code" = unname(colors$brand["blue"]),
+      "Email code" = unname(colors$brand_base["forest"]),
+      "Voice call code" = unname(colors$brand_action["orange"])
+    )
+  ) +
+  theme_void(base_family = brand_font) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(colour = "grey30"),
+    legend.title = element_blank()
+  ) +
+  labs(
+    fill = NULL,
+    title = "How people verify today, before passkeys arrive",
+    subtitle = "Each square = 1% of one-time-code challenges over the two weeks"
+  )
+
+add_cds_logo(add_watermark(mfa_plot, date = report_date, edition = params$edition))
+```
+
+The call centre stayed quiet through the period, handling **`r cc_genuine`** genuine
+calls across the two most recent call-centre weeks (ending June 13 and June 20; test
+calls excluded), so the volume is too small to read much into. Callers were mostly
+asking the basics, what CanadaLogin is and how to set up an account
+(**`r percent(cc_getting_started_share, accuracy = 1)`** of topics between them).
+
+```{r teardown}
+DBI::dbDisconnect(con)
+```
+
+{{< include _footer.qmd >}}
