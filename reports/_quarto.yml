@@ -1,2 +1,6 @@
 project:
-  output-dir: out
+  # Render straight into the sibling publishing repo's staging folder.
+  # Relative to this project root (reports/): up to the repo, up to projects/,
+  # then into canadalogin-signal-check-publishing/reports. Assumes the two
+  # repos sit side by side under the same parent directory.
+  output-dir: ../../canadalogin-signal-check-publishing/reports

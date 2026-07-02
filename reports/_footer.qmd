@@ -16,5 +16,5 @@ for (footer_env_path in c(".env", "../.env", "../../.env")) {
 ## Additional resources
 
 - **CanadaLogin metrics dashboard** ([Power BI](`r Sys.getenv("FOOTER_DASHBOARD_URL")`)) - the live dashboard, accessible only on your ESDC laptop.
-- **CanadaLogin Metrics Cookbook** ([Cookbook](https://cds-snc.github.io/canadalogin-metrics-cookbook/) | [Repo](https://github.com/cds-snc/canadalogin-metrics-cookbook)) - how each metric is defined and calculated, and what data is available.
+- **CanadaLogin Metrics Cookbook** ([website](https://cds-snc.github.io/canadalogin-metrics-cookbook/) | [repo](https://github.com/cds-snc/canadalogin-metrics-cookbook)) - how each metric is defined and calculated, and what data is available.
 - **Signal Check report archive** ([CDS Google Drive](`r Sys.getenv("FOOTER_ARCHIVE_GDRIVE_URL")`) | [ESDC SharePoint](`r Sys.getenv("FOOTER_ARCHIVE_SHAREPOINT_URL")`)) - past editions of this report.

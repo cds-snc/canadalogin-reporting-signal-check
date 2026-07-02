@@ -1,5 +1,5 @@
 application_name,service_name,operator,is_internal,launch_date
-IRIS - PRC - Prod,IRIS,PrairiesCan,FALSE,2026-04-22
+IRIS - PRC - Prod,IRIS (PrairiesCan),PrairiesCan,FALSE,2026-04-22
 VAC Healthshare - VAC - Prod,VAC Healthshare,Veterans Affairs Canada,FALSE,2026-06-09
 GC Digital Talent - TBS - Pilot - Prod,GC Digital Talent,Treasury Board of Canada Secretariat,TRUE,2026-06-19
 Flow Application,Flow Application,CanadaLogin (internal),TRUE,2026-04-22

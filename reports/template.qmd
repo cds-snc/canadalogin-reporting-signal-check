@@ -1,6 +1,6 @@
 ---
 title: "CanadaLogin Signal Check" 
-subtitle: "For the weeks of January 1-14"
+subtitle: "For the two-week period of January 1-14"
 author: "EDCP Data and Research Team"  # example@cds-snc.ca
 date: "2026-01-01"
 params:
@@ -30,7 +30,7 @@ suppressPackageStartupMessages({
 report_date <- as.Date("2026-01-01")
 ```
 
-This is a style template for the biweekly signal check. The graphs below
+This is a style template for the biweekly Signal Check. The graphs below
 demonstrate the report's visual conventions: brand colours, CDS logo placement,
 watermark, `theme_cds()` typography, and axis formatting.
 

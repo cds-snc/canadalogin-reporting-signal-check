@@ -481,24 +481,32 @@ mfa_factor_mix <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
 
 print(mfa_factor_mix, n = 500)
 
-# Round shares to whole percentage points, then nudge the largest so the squares
-# sum to exactly 100: a clean 10-per-layer waffle where one square = 1% of
-# challenges.
+# Friendly OTP labels so the workbook speaks the report's language (SMS OTP /
+# Email OTP / Voice OTP); non-OTP factors keep their raw mfa_type. Then round
+# shares to whole percentage points and nudge the largest so the squares sum to
+# exactly 100: a clean 10-per-layer waffle where one square represents 1%.
+otp_display <- c(sms_otp = "SMS OTP", email_otp = "Email OTP", voice_otp = "Voice OTP")
 mfa_waffle <- mfa_factor_mix |>
-  mutate(pct = round(share * 100))
+  mutate(
+    factor_label = coalesce(unname(otp_display[mfa_type]), mfa_type),
+    pct = round(share * 100)
+  )
 mfa_waffle$pct[which.max(mfa_waffle$pct)] <-
   mfa_waffle$pct[which.max(mfa_waffle$pct)] + (100L - sum(mfa_waffle$pct))
 
 # geom_waffle0 (gap = 0) makes the squares touch with no white space between them;
 # scale_fill_brewer pulls a ColorBrewer qualitative palette for clearer contrast.
 ggplot(mfa_waffle) +
-  geom_waffle0(aes(x = "MFA", y = pct, fill = mfa_type), bricks_per_layer = 10) +
+  geom_waffle0(aes(x = "MFA", y = pct, fill = factor_label), bricks_per_layer = 10) +
   coord_waffle(10) +
   scale_fill_brewer(palette = "Set1") +
   theme_void() +
   labs(
     fill = "Factor", title = "MFA factor mix this period",
-    subtitle = "Each square = 1% of MFA challenges (sent for OTP, outcomes for non-OTP)"
+    subtitle = paste0(
+      "Each square represents 1% of MFA challenges ",
+      "(sent for OTP, outcomes for non-OTP)"
+    )
   )
 ```
 
