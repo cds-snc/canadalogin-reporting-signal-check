@@ -34,9 +34,13 @@ This is a style template for the biweekly Signal Check. The graphs below
 demonstrate the report's visual conventions: brand colours, CDS logo placement,
 watermark, `theme_cds()` typography, and axis formatting.
 
-The first graph is a time-series line chart, the format used for the headline
-metric each report. The most recent data point is called out in brand red with a
-bold label.
+Each body paragraph opens with a bolded action title: a single-clause statement
+of the paragraph's takeaway that sets the reader's expectation before they read
+on. It does not need to flow grammatically into the sentence that follows.
+
+**The headline is a called-out time series.** The first graph is a time-series
+line chart, the format used for the headline metric each report. The most recent
+data point is called out in brand red with a bold label.
 
 ```{r headline-graph}
 #| fig-alt: |
@@ -70,9 +74,10 @@ headline_plot <- ggplot(econ, aes(date, psavert)) +
 add_cds_logo(add_watermark(headline_plot, date = report_date, edition = params$edition))
 ```
 
-The second graph is a horizontal bar chart, the format used for comparing
-categories side by side. One bar is highlighted in brand orange to show how a
-new or notable entry can be called out.
+**Bar charts line up categories for comparison.** The second graph is a
+horizontal bar chart, the format used for comparing categories side by side. One
+bar is highlighted in brand orange to show how a new or notable entry can be
+called out.
 
 ```{r adoption-graph}
 #| fig-alt: |
@@ -109,9 +114,10 @@ adoption_plot <- ggplot(
 add_cds_logo(add_watermark(adoption_plot, date = report_date, edition = params$edition))
 ```
 
-The third graph is a dense weekly time series. It shows how `theme_cds()` handles
-a long date axis with many data points. The line uses brand forest green, a
-second single-series colour option beyond the headline blue.
+**Dense weekly series stress-test the date axis.** The third graph is a dense
+weekly time series. It shows how `theme_cds()` handles a long date axis with many
+data points. The line uses brand forest green, a second single-series colour
+option beyond the headline blue.
 
 ```{r trend-graph}
 #| fig-alt: |
