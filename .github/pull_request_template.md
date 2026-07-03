@@ -41,5 +41,9 @@ feat: add signal check edition N
 
 - [ ] Re-render from `main`
 - [ ] Publish via `cds-snc/canadalogin-signal-check-publishing`
+- [ ] Upload to Google Drive
+- [ ] Upload to SharePoint
 - [ ] Send the email to readers
+- [ ] Post in #edcp-data-and-research
+- [ ] Crosspost link to #canadalogin
 - [ ] Add email text to publishing repository
