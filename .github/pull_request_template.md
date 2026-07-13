@@ -2,6 +2,9 @@
 
 For the two-week period of (month DD - month DD).
 
+DO NOT POST THE LINK TO THE REPORT IN THE PR.
+Link it on Slack instead, tagging the reviewers.
+
 ## Pre-merge checklist
 
 - [ ] Preflight safety checks pass and data is up-to-date
