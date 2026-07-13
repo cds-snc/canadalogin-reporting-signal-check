@@ -1,0 +1,397 @@
+---
+title: "CanadaLogin Signal Check"
+subtitle: "For the two-week period of June 29-July 12"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-07-13"
+params:
+  edition: 2
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries below are inlined and frozen to hardcoded June 29-July 12, 2026 date
+# bounds (the two complete Mon-Sun weeks ending on the most recent Sunday). This
+# report is a point-in-time record and must reproduce identically forever, so the
+# bounds and the internal-app list are literals rather than computed.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(stringr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Watermark date: the date the report was first created.
+report_date <- as.Date("2026-07-13")
+
+# Relying-party registry: clean service names, operating department, internal
+# flag. The internal exclusion is inlined as a frozen literal list so this
+# report's analytical result cannot change if the registry is later reclassified.
+# This list reflects the registry on 2026-07-13: the GC Digital Talent pilot and
+# the migration simulator are internal, so app-level views show only the public
+# GC Digital Talent production app.
+relying_parties <- load_relying_parties()
+internal_apps <- c(
+  "Flow Application",
+  "GCS Migration Solution",
+  "GC Sign In - Profile Management App",
+  "GC Digital Talent - TBS - Pilot - Prod",
+  "GCS SIC Migration RP Simulator - PRD"
+)
+
+# Headline series: system-wide cumulative YTD unique users by week, launch
+# through the period end. The ytd column is monotonic within a week, so the
+# week's value is its max; daily unique_users counts user-days and must not be
+# summed. Time-series graphs plot weekly points even though the period is two
+# weeks, so this spans from the launch week. Plot each week at its last day (the
+# Sunday week-ending date).
+auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  filter(from_date >= as.Date("2026-04-20"), from_date <= as.Date("2026-07-12")) |>
+  transmute(
+    day = as.Date(from_date),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  arrange(day)
+
+ytd_series <- auth_daily |>
+  mutate(week_start = monday_of(day)) |>
+  group_by(week_start) |>
+  summarise(ytd_unique_users = max(ytd_unique_users, na.rm = TRUE), .groups = "drop") |>
+  mutate(week_end = week_start + 6) |>
+  arrange(week_end)
+
+# Passkeys (FIDO2) went generally available to the public on 2026-07-06 (cookbook:
+# sign-in-mfa-activity-by-factor). FIDO2 is a non-OTP factor with no "sent" event,
+# so it is counted through its success/failure outcomes. The reporting period
+# straddles the rollout: June 29-July 5 is the internal-only "before", July 6-12
+# the public "after". Daily granularity (not the usual weekly points) is
+# deliberate here so the mid-period step change is visible rather than collapsed
+# into a single weekly point.
+passkey_daily <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date("2026-06-29"),
+    from_date <= as.Date("2026-07-12"),
+    mfa_type == "fido2",
+    result %in% c("success", "failure")
+  ) |>
+  transmute(day = as.Date(from_date), count = as.double(count)) |>
+  collect() |>
+  group_by(day) |>
+  summarise(passkey_events = sum(count, na.rm = TRUE), .groups = "drop") |>
+  # Fill any gap days (a day with no FIDO2 rows) so the daily bars are continuous.
+  right_join(
+    data.frame(day = seq(as.Date("2026-06-29"), as.Date("2026-07-12"), by = "day")),
+    by = "day"
+  ) |>
+  mutate(
+    passkey_events = coalesce(passkey_events, 0),
+    era = if_else(
+      day >= as.Date("2026-07-06"),
+      "From July 6 (open to the public)",
+      "Before July 6 (internal only)"
+    )
+  ) |>
+  arrange(day)
+
+# FIDO2's share of the public sign-in second factors in its first public week
+# (the week ending July 12). Restricted to the factors the public can sign in
+# with (sms_otp, voice_otp, fido2), de-duplicated per the cookbook: count "sent"
+# for the OTP factors and outcomes for FIDO2 (which has no "sent" event).
+otp_types <- c("sms_otp", "email_otp", "voice_otp")
+sign_in_types <- c("sms_otp", "voice_otp", "fido2")
+signin_factor_finalweek <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date("2026-07-06"),
+    from_date <= as.Date("2026-07-12"),
+    mfa_type %in% sign_in_types,
+    result == "sent" |
+      (result %in% c("success", "failure") & !mfa_type %in% otp_types)
+  ) |>
+  group_by(mfa_type) |>
+  summarise(n = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(share = n / sum(n))
+
+# Adoption breadth: weekly sign-ins (total_logins, not inflated the way summed
+# auth events are) by public application, launch through the period end. Internal
+# apps excluded via the literal list above, then joined to the registry for clean
+# service names.
+signins_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    from_date >= as.Date("2026-04-20"),
+    from_date <= as.Date("2026-07-12"),
+    !application_name %in% internal_apps
+  ) |>
+  transmute(
+    application_name,
+    day = as.Date(from_date),
+    total_logins = as.double(total_logins)
+  ) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(application_name, week_end) |>
+  summarise(total_logins = sum(total_logins, na.rm = TRUE), .groups = "drop") |>
+  left_join(relying_parties, by = "application_name") |>
+  arrange(service_name, week_end)
+
+# Call centre: weekly_activity_report stores date columns as strings (catalog:
+# cast to DATE when filtering); it is tiny (one row per week), so collect and
+# filter in R on parsed dates. Its weeks run Sunday-Saturday and the feed lags, so
+# they do not align to the Mon-Sun reporting period. We use the two most recent
+# loaded call-centre weeks (ending June 27 and July 4).
+call_activity <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
+  collect() |>
+  mutate(
+    date_range_start = as.Date(date_range_start),
+    date_range_end = as.Date(date_range_end)
+  ) |>
+  filter(
+    date_range_start >= as.Date("2026-06-21"),
+    date_range_end <= as.Date("2026-07-04")
+  ) |>
+  transmute(
+    date_range_start, date_range_end,
+    genuine_calls = as.double(calls_answered) - as.double(test_calls)
+  ) |>
+  arrange(date_range_start)
+
+# weekly_topic_dump has a real DATE column, call_date; filter on it directly.
+# Align the topic window to the same two call-centre weeks so themes match counts.
+call_topics <- tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
+  filter(call_date >= as.Date("2026-06-21"), call_date <= as.Date("2026-07-04")) |>
+  mutate(call_topic = str_squish(statobject)) |>
+  count(call_topic, name = "topic_count") |>
+  collect() |>
+  mutate(topic_share = topic_count / sum(topic_count, na.rm = TRUE)) |>
+  arrange(desc(topic_count))
+
+# Values referenced in the prose, so the text cannot drift from the queries.
+ytd_at <- function(week_end) {
+  ytd_series$ytd_unique_users[ytd_series$week_end == as.Date(week_end)]
+}
+latest_ytd <- ytd_at("2026-07-12")
+prev_week_ytd <- ytd_at("2026-07-05")
+pre_period_ytd <- ytd_at("2026-06-28")
+net_new_period <- latest_ytd - pre_period_ytd
+
+# Weekly growth rate before GC Digital Talent's Jun 25 launch (weeks ending Jun 7
+# and Jun 14) vs after (weeks ending Jul 5 and Jul 12), to contrast the pace. A
+# week's growth is its YTD value minus the prior week's.
+wk_delta <- function(we) ytd_at(we) - ytd_at(as.Date(we) - 7L)
+growth_before <- round(mean(c(wk_delta("2026-06-07"), wk_delta("2026-06-14"))))
+growth_after <- round(mean(c(wk_delta("2026-07-05"), wk_delta("2026-07-12"))))
+growth_multiple <- round(growth_after / growth_before)
+
+# Passkey prose values: the internal-only baseline week vs the first public week.
+rollout <- as.Date("2026-07-06")
+passkey_before <- sum(passkey_daily$passkey_events[passkey_daily$day < rollout])
+passkey_after <- sum(passkey_daily$passkey_events[passkey_daily$day >= rollout])
+passkey_peak_day <- max(passkey_daily$passkey_events)
+fido2_share <- with(signin_factor_finalweek, share[mfa_type == "fido2"])
+sms_share <- with(signin_factor_finalweek, share[mfa_type == "sms_otp"])
+
+# App sign-in prose values: the latest week for the two largest public services.
+signin_at <- function(service, week_end) {
+  v <- signins_weekly$total_logins[
+    signins_weekly$service_name == service &
+      signins_weekly$week_end == as.Date(week_end)
+  ]
+  if (length(v) == 0) 0 else v
+}
+dt_latest <- signin_at("GC Digital Talent", "2026-07-12")
+iris_latest <- signin_at("IRIS (PrairiesCan)", "2026-07-12")
+
+cc_genuine <- sum(call_activity$genuine_calls)
+cc_top <- call_topics[1, ]
+cc_dt <- call_topics |> filter(call_topic == "GC Digital Talent")
+```
+
+Welcome back to the **CanadaLogin Signal Check**, our every-second-week read on
+how CanadaLogin is doing, written for an informed-but-not-technical audience and kept to about
+a page. This is only our second edition, so the shape of it may still shift; if
+you missed the [first one](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/REDACTED/20260629_signal-check.html),
+it is worth a two-minute look. As always, let us know what is useful and what is not.
+
+**CanadaLogin is growing several times faster since Digital Talent went live.**
+Cumulative unique users for the year reached **`r comma(latest_ytd)`**, up
+**`r comma(net_new_period)`** across the two weeks. In the two weeks before GC
+Digital Talent came online, the user base was growing by about
+**`r comma(growth_before)`** people a week; across these two weeks it added
+roughly **`r comma(growth_after)`** a week, close to **`r growth_multiple`** times
+that pace. That faster rate has held rather than fading back toward the old
+baseline once the launch rush passed. This figure is
+system-wide and includes a small amount of internal usage, so read it as total
+reach rather than a public-only count.
+
+```{r headline-graph}
+#| fig-alt: |
+#|   Line chart of cumulative unique users for the year, by week, from late April
+#|   to mid-July 2026. The curve climbs steadily to about 3,400, steps up sharply
+#|   at a dashed line marking the GC Digital Talent launch on June 25, and
+#|   continues a steady climb to 8,765 by the week ending July 12, which is marked
+#|   in red.
+
+ytd_plot <- ytd_series |>
+  mutate(is_current = week_end == max(week_end))
+
+# Digital Talent's public production launch (Jun 25) is what drives the late-June
+# step in the curve; mark it so the reader can connect the two.
+dt_launch <- as.Date("2026-06-25")
+
+headline_plot <- ggplot(ytd_plot, aes(week_end, ytd_unique_users)) +
+  geom_vline(
+    xintercept = dt_launch, color = colors$greyscale[3],
+    linetype = "dashed", linewidth = 0.4
+  ) +
+  annotate(
+    "text", x = dt_launch, y = 0.97 * max(ytd_plot$ytd_unique_users),
+    label = "GC Digital Talent\nlaunched Jun 25", hjust = 1.04, vjust = 1,
+    size = 2.8, color = colors$greyscale[2], lineheight = 0.9
+  ) +
+  geom_line(color = colors$brand["blue"], linewidth = 1) +
+  geom_point(color = colors$brand["blue"], size = 1.6) +
+  geom_point(
+    data = subset(ytd_plot, is_current),
+    color = colors$brand["red"], size = 3.2
+  ) +
+  geom_text(
+    data = subset(ytd_plot, is_current),
+    aes(label = comma(ytd_unique_users)),
+    color = colors$brand["red"], vjust = -1, fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_x_date(breaks = ytd_plot$week_end, date_labels = "%b %d") +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Unique users (year to date)",
+    title = "Steady growth after the Digital Talent surge",
+    subtitle = "Cumulative unique users for the year, by week since launch"
+  )
+
+add_cds_logo(add_watermark(headline_plot, date = report_date, edition = params$edition))
+```
+
+**Passkeys were released to the public on July 6, and use jumped right away.**
+A passkey is
+[one part secret and one part shared](https://docs.google.com/presentation/d/10b_F6qgwE2xlJa1YXi9iwXLCihkQgWxcn_u2-huwJ-Y/edit?usp=sharing):
+your device keeps a secret and, through some math, proves you hold it without
+ever revealing it. That makes it both faster to use and much harder to phish
+than an OTP or a password, because there is no code travelling across the
+internet to intercept. Internal CDS staff have used passkeys all along to
+authenticate as administrators to the IBM Verify tenants, so the data cannot
+cleanly separate internal from public use. What it can show is the jump in
+volume once the doors opened. Passkey sign-ins went from an internal-only
+trickle of **`r passkey_before`** in the week before the rollout to
+**`r passkey_after`** in the first public week, reaching as many as
+**`r passkey_peak_day`** in a single day. It is a real start, though still a
+small slice of the whole: passkeys were about
+**`r percent(fido2_share, accuracy = 1)`** of the second factors people used to
+sign in that week, with SMS OTP still the large majority at
+**`r percent(sms_share, accuracy = 1)`**.
+
+```{r passkey-graph}
+#| fig-alt: |
+#|   Bar chart of daily passkey sign-in events from June 29 to July 12, 2026.
+#|   Bars are near zero before July 6 (internal use only) and step up sharply
+#|   from July 6 onward, when passkeys opened to the public, peaking around 39 in
+#|   a day before easing.
+
+passkey_plot <- ggplot(passkey_daily, aes(day, passkey_events, fill = era)) +
+  geom_col() +
+  geom_vline(
+    xintercept = as.Date("2026-07-06"),
+    color = colors$brand["red"], linetype = "dashed", linewidth = 0.4
+  ) +
+  scale_fill_manual(values = c(
+    "Before July 6 (internal only)" = unname(colors$greyscale[3]),
+    "From July 6 (open to the public)" = unname(colors$brand_action["orange"])
+  )) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.12))) +
+  scale_x_date(date_breaks = "2 days", date_labels = "%b %d") +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Passkey sign-in events", fill = NULL,
+    title = "Passkey use took off the day it opened to the public",
+    subtitle = paste0(
+      "Daily passkey (FIDO2) sign-in events; ",
+      "dashed line marks the July 6 rollout"
+    )
+  )
+
+add_cds_logo(add_watermark(passkey_plot, date = report_date, edition = params$edition))
+```
+
+**Digital Talent is now the busiest public service.** Beyond the one-time rush of
+new sign-ups last edition, the question is whether people keep coming back. They
+do: GC Digital Talent drew about **`r comma(dt_latest)`** sign-ins in the final
+week and held there, roughly twice the volume of
+**IRIS (PrairiesCan)** (**`r comma(iris_latest)`**), the next busiest. IRIS
+continues its steady week-to-week traffic, and VAC Healthshare remains small but
+present. The chart counts sign-ins to each public service (internal apps
+excluded).
+
+```{r signins-graph}
+#| fig-alt: |
+#|   Line chart of weekly sign-ins by public service from late April to mid-July
+#|   2026. GC Digital Talent appears in late June and jumps to the top at roughly
+#|   2,400 sign-ins a week, above IRIS (PrairiesCan) at around 700 to 1,250, with
+#|   VAC Healthshare low throughout.
+
+signins_plot <- ggplot(
+  signins_weekly,
+  aes(week_end, total_logins, color = service_name)
+) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.2) +
+  scale_color_manual(values = c(
+    "GC Digital Talent" = unname(colors$brand_action["orange"]),
+    "IRIS (PrairiesCan)" = unname(colors$brand["blue"]),
+    "VAC Healthshare" = unname(colors$brand_base["forest"])
+  )) +
+  scale_y_continuous(labels = comma, limits = c(0, NA)) +
+  scale_x_date(breaks = unique(signins_weekly$week_end), date_labels = "%b %d") +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Sign-ins", color = NULL,
+    title = "Digital Talent leads weekly sign-ins",
+    subtitle = "Weekly sign-ins by public service since launch (internal apps excluded)"
+  )
+
+add_cds_logo(add_watermark(signins_plot, date = report_date, edition = params$edition))
+```
+
+The call centre stayed quiet, handling **`r cc_genuine`** genuine calls across
+its two most recent weeks (ending June 27 and July 4; test calls excluded), so
+the volume is too small to read much into. Callers were mostly after the basics,
+what CanadaLogin is (**`r percent(cc_top$topic_share, accuracy = 1)`** of topics),
+with Digital Talent the next most common theme
+(**`r percent(cc_dt$topic_share, accuracy = 1)`**) as its users came online.
+
+```{r teardown}
+DBI::dbDisconnect(con)
+```
+
+{{< include _footer.qmd >}}

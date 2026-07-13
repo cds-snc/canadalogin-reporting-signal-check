@@ -634,6 +634,110 @@ ggplot(high_volume_factors, aes(week_end, mfa_success_rate, color = mfa_type)) +
        title = "Weekly MFA success rate by factor since launch")
 ```
 
+## Passkeys (FIDO2): rollout and sign-in factor mix
+
+Passkeys became generally available to the public on 2026-07-06 (cookbook:
+sign-in-mfa-activity-by-factor). FIDO2 was already used internally before that
+date, and the data cannot separate internal from public passkey users, so the
+signal to watch is the change in FIDO2 volume and in its share of the public
+sign-in factors once it went public. Restrict to the factors the public can
+sign in with (sms_otp, voice_otp, fido2); email_otp validates emails at sign-up
+and kq/totp/qr/ibm_verify_push are internal. De-duplicate per the cookbook:
+count "sent" for the OTP factors and outcomes for fido2 (which has no "sent"
+event), so OTP is not double-counted against passkeys.
+
+### Weekly sign-in factor mix (since launch)
+
+```{r signin-factor-mix}
+otp_types <- c("sms_otp", "email_otp", "voice_otp")
+sign_in_types <- c("sms_otp", "voice_otp", "fido2")
+
+signin_factor_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(launch_week_start),
+    from_date <= as.Date(period_end),
+    mfa_type %in% sign_in_types,
+    result == "sent" |
+      (result %in% c("success", "failure") & !mfa_type %in% otp_types)
+  ) |>
+  transmute(day = as.Date(from_date), mfa_type, count = as.double(count)) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end, mfa_type) |>
+  summarise(n = sum(count, na.rm = TRUE), .groups = "drop") |>
+  group_by(week_end) |>
+  mutate(share = n / sum(n)) |>
+  ungroup() |>
+  arrange(mfa_type, week_end)
+
+print(signin_factor_weekly, n = 500)
+
+# Weekly FIDO2 volume, so the post-2026-07-06 jump is visible against the flat
+# internal-only baseline before it.
+signin_factor_weekly |>
+  filter(mfa_type == "fido2") |>
+  ggplot(aes(week_end, n)) +
+  geom_col(fill = colors$canada) +
+  geom_vline(xintercept = as.Date("2026-07-06"), linetype = "dashed",
+             color = colors$highlight[1]) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  scale_x_date(breaks = unique(signin_factor_weekly$week_end),
+               date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Passkey (FIDO2) sign-in events",
+       title = "Weekly passkey usage since launch",
+       subtitle = "Dashed line marks the 2026-07-06 public rollout")
+
+# FIDO2 share of the public sign-in factors, week by week.
+signin_factor_weekly |>
+  filter(mfa_type == "fido2") |>
+  ggplot(aes(week_end, share)) +
+  geom_line(color = colors$canada) +
+  geom_point(color = colors$canada, size = 1.6) +
+  scale_y_continuous(labels = percent, limits = c(0, NA)) +
+  scale_x_date(breaks = unique(signin_factor_weekly$week_end),
+               date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "FIDO2 share of public sign-in factors",
+       title = "Passkey share of public sign-in second factors")
+```
+
+### Daily passkey usage around the rollout
+
+Daily granularity (not the usual weekly points) because the rollout lands
+mid-period: a weekly series collapses the step-change into a single point. FIDO2
+outcome events per day; the dashed line marks the 2026-07-06 rollout.
+
+```{r passkey-daily}
+passkey_daily <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(period_start) - 7L,
+    from_date <= as.Date(period_end),
+    mfa_type == "fido2",
+    result %in% c("success", "failure")
+  ) |>
+  transmute(day = as.Date(from_date), count = as.double(count)) |>
+  collect() |>
+  group_by(day) |>
+  summarise(passkey_signins = sum(count, na.rm = TRUE), .groups = "drop") |>
+  arrange(day)
+
+print(passkey_daily, n = 500)
+
+ggplot(passkey_daily, aes(day, passkey_signins)) +
+  geom_col(fill = colors$canada) +
+  geom_vline(xintercept = as.Date("2026-07-06"), linetype = "dashed",
+             color = colors$highlight[1]) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  scale_x_date(date_breaks = "2 days", date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Passkey (FIDO2) sign-in events",
+       title = "Daily passkey usage around the public rollout")
+```
+
 ## Call centre (reporting period)
 
 Test calls separated out; volumes are tiny, so prefer counts over rates.
