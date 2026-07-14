@@ -17,4 +17,57 @@ for (footer_env_path in c(".env", "../.env", "../../.env")) {
 
 - **CanadaLogin metrics dashboard** ([Power BI](`r Sys.getenv("FOOTER_DASHBOARD_URL")`)) - the live dashboard, accessible only on your ESDC laptop.
 - **CanadaLogin Metrics Cookbook** ([website](https://cds-snc.github.io/canadalogin-metrics-cookbook/) | [repo](https://github.com/cds-snc/canadalogin-metrics-cookbook)) - how each metric is defined and calculated, and what data is available.
-- **Signal Check report archive** ([CDS Google Drive](`r Sys.getenv("FOOTER_ARCHIVE_GDRIVE_URL")`) | [ESDC SharePoint](`r Sys.getenv("FOOTER_ARCHIVE_SHAREPOINT_URL")`)) - past editions of this report.
+- **Signal Check report archive** ([CDS Google Drive](`r Sys.getenv("FOOTER_ARCHIVE_GDRIVE_URL")`) | [ESDC SharePoint](`r Sys.getenv("FOOTER_ARCHIVE_SHAREPOINT_URL")`)) - past editions of this report<a id="cat-trigger" href="#" title="">.</a>
+
+<!--
+Easter egg: the period above is a disguised link. Clicking it makes a small cat
+peek up from the bottom-right corner (click the cat to dismiss). Kept here in the
+shared, unfrozen footer so it renders on every edition. The <img> src stays a
+local path; Quarto's embed-resources inlines it into the self-contained HTML.
+-->
+<style>
+#cat-trigger { color: inherit; text-decoration: none; }
+#cat-egg {
+  position: fixed;
+  right: 1.5rem;
+  bottom: -25px;
+  width: 240px;
+  max-width: 38vw;
+  z-index: 9999;
+  transform: translateY(112%);
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  cursor: pointer;
+  pointer-events: none;
+}
+#cat-egg.cat-visible {
+  transform: translateY(0);
+  pointer-events: auto;
+}
+#cat-egg img { display: block; width: 100%; height: auto; }
+#cat-egg .cat-caption {
+  text-align: center;
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+  margin-bottom: 2px;
+  color: #333;
+  transform: rotate(-4deg);
+}
+</style>
+
+<div id="cat-egg" onclick="this.classList.remove('cat-visible')">
+  <div class="cat-caption">hang in there babe</div>
+  <img src="../img/cat-only.png" alt="A graffiti drawing of a cat clinging to a ledge by its paws, in the style of the 'Hang in there' poster, captioned 'hang in there babe'.">
+</div>
+
+<script>
+(function () {
+  var trigger = document.getElementById("cat-trigger");
+  var egg = document.getElementById("cat-egg");
+  if (!trigger || !egg) return;
+  trigger.addEventListener("click", function (e) {
+    e.preventDefault();
+    egg.classList.toggle("cat-visible");
+  });
+})();
+</script>
