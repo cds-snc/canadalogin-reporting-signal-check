@@ -1,23 +1,39 @@
 ---
-title: "CanadaLogin Signal Check - Exploration Workbook"
-subtitle: "Internal use only. Not a polished report."
+title: "CanadaLogin Signal Check"
+subtitle: "Exploration dashboard. Internal use only, not a polished report."
+brand: reports/_brand.yml
 format:
   html:
+    theme: cosmo
     embed-resources: true
     toc: true
+    toc-depth: 2
+    toc-title: Sections
     code-fold: true
+    code-tools: true
+    fig-width: 7
+    fig-height: 4.2
+    fig-format: png
 execute:
   warning: true
   message: true
 ---
 
-Use this workbook to keep track of queries that produce interesting metrics. If you
-find something interesting, keep it in this workbook for next time. Don't remove queries
-unless they no longer work or they're misleading / broken.
+This dashboard is the working surface for a cycle: run it fresh, read the tables
+against their graphs, and pick the story. Sections run in the order the cycle
+runs, from the data-health gate through to the call centre. Every query is
+folded away under its output. Unfold it and paste it into the report; that is
+what these queries are for.
+
+Keep queries here unless they break or mislead. Add to them as new metrics,
+tables, and columns land.
 
 ```{r setup}
+#| warning: false
+#| message: false
 source("R/connection.R")
 source("R/colours.R")
+source("R/branding.R")
 source("R/preflight.R")
 suppressPackageStartupMessages({
   library(dplyr)
@@ -28,25 +44,183 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(scales)
   library(ggbrick)
+  library(reactable)
+  library(htmltools)
 })
 
 con <- connect_athena()
 
 # Relying-party registry: application_name -> service name, operator, internal flag.
-relying_parties <- load_relying_parties()
+relying_parties <- load_relying_parties() |>
+  mutate(launch_date = as.Date(launch_date))
 internal_apps <- relying_parties$application_name[relying_parties$is_internal]
+
+# Palettes -------------------------------------------------------------------
+#
+# One colour per entity, defined once and reused by every graph below.
+#
+# The old workbook let each graph build its own scale, so an app's colour
+# depended on that graph's sort order: the trend charts mapped service_name
+# alphabetically while the stacked chart mapped it by launch_date, which gave
+# the same service two different colours. Side by side in a dashboard that is
+# actively misleading, so the mapping is derived once, here.
+#
+# Derived from the registry rather than hardcoded: a newly onboarded relying
+# party picks up the next colour automatically instead of falling through to
+# NA and silently desynchronising the charts again.
+
+# Public services in launch order, so the longest-lived app is the first brand
+# colour and newcomers append rather than shifting everything along.
+public_services <- relying_parties |>
+  filter(!is_internal) |>
+  arrange(launch_date) |>
+  pull(service_name) |>
+  unique()
+
+# brand_base first (the landscape tones), then the action colours, then greys
+# once the brand palette is exhausted.
+app_palette <- c(
+  unname(colors$brand_base),
+  unname(colors$brand_action),
+  unname(colors$greyscale[2:4])
+)
+app_colors <- setNames(
+  app_palette[seq_along(public_services)],
+  public_services
+)
+# "Other" is context, not a series: pin it to grounding grey, never a base tone.
+app_colors["Other"] <- unname(colors$brand_grounding["grey"])
+
+# MFA factors. Display labels first, so the dashboard speaks the report's
+# language ("SMS OTP", not "text message code").
+mfa_labels <- c(
+  sms_otp         = "SMS OTP",
+  email_otp       = "Email OTP",
+  voice_otp       = "Voice OTP",
+  fido2           = "Passkey (FIDO2)",
+  totp            = "TOTP",
+  kq              = "Knowledge question",
+  qr              = "QR code",
+  ibm_verify_push = "IBM Verify push"
+)
+
+# Passkeys get an action colour because they are the thing being watched this
+# period; the rest take base then grounding tones.
+mfa_colors <- c(
+  "SMS OTP"            = unname(colors$brand["blue"]),
+  "Email OTP"          = unname(colors$brand["forest"]),
+  "Voice OTP"          = unname(colors$brand["green"]),
+  "Passkey (FIDO2)"    = unname(colors$brand["orange"]),
+  "TOTP"               = unname(colors$brand["red"]),
+  "Knowledge question" = unname(colors$brand["yellow"]),
+  "QR code"            = unname(colors$brand["sky"]),
+  "IBM Verify push"    = unname(colors$brand["grey"])
+)
+
+# Raw mfa_type -> display label, leaving unknown factors as their raw name so a
+# newly shipped factor shows up visibly rather than vanishing.
+mfa_label <- function(x) coalesce(unname(mfa_labels[x]), x)
+
+# Guarantee a colour for every level a graph actually has, including factors not
+# in the lookup yet: scale_*_manual errors on a missing level, so fall back to
+# mid grey instead of failing the render.
+palette_for <- function(levels, base) {
+  out <- unname(base[levels])
+  out[is.na(out)] <- unname(colors$greyscale[3])
+  setNames(out, levels)
+}
+
+# Presentation helpers ---------------------------------------------------------
+#
+# Nothing analytical lives here; every number on this page comes from the query
+# in its own chunk below.
+
+# reactable in the brand's clothes: fixed height so the table sits level with the
+# graph beside it, scrolling internally rather than stretching the row.
+dash_table <- function(df, height = 380, ...) {
+  reactable(
+    df,
+    height = height,
+    pagination = FALSE,
+    compact = TRUE,
+    striped = TRUE,
+    highlight = TRUE,
+    sortable = TRUE,
+    resizable = TRUE,
+    wrap = FALSE,
+    defaultColDef = colDef(minWidth = 95, align = "right"),
+    theme = reactableTheme(
+      style = list(fontFamily = "Source Sans Pro, Source Sans 3, sans-serif",
+                   fontSize = "0.82rem"),
+      headerStyle = list(
+        background = unname(colors$brand["blue"]),
+        color = "#FFFFFF",
+        fontWeight = 600
+      ),
+      borderColor = unname(colors$brand["grey"]),
+      stripedColor = "#F7F9FB",
+      highlightColor = unname(colors$brand["sky"])
+    ),
+    ...
+  )
+}
+
+# Small stat cards for the data-health strip: the same values the anomaly and
+# period chunks compute, surfaced as cards instead of console output.
+status_card <- function(label, value, color = unname(colors$brand["blue"])) {
+  div(
+    style = paste0(
+      "flex:1 1 170px; border:1px solid ", unname(colors$brand["grey"]),
+      "; border-left:5px solid ", color,
+      "; border-radius:6px; padding:10px 14px; background:#FFFFFF;"
+    ),
+    div(
+      style = paste0(
+        "font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em;",
+        "color:#666666;"
+      ),
+      label
+    ),
+    div(
+      style = paste0("font-size:1.35rem; font-weight:600; color:", color, ";"),
+      value
+    )
+  )
+}
+
+status_strip <- function(...) {
+  div(style = "display:flex; gap:12px; flex-wrap:wrap; margin:1rem 0 1.5rem;",
+      ...)
+}
+
+# Weekly date axis: one break per week across the span, labelled by the week's
+# Sunday (each weekly point plotted at its LAST day).
+scale_x_weeks <- function(breaks) {
+  scale_x_date(breaks = sort(unique(breaks)), date_labels = "%b %d")
+}
+
+# Shared axis-label rotation, applied on top of theme_cds().
+# theme_cds() comes from R/branding.R via source(), which lintr cannot follow.
+theme_dash <- function() {
+  theme_cds() + # nolint: object_usage_linter.
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "bottom",
+      plot.title.position = "plot"
+    )
+}
 ```
 
-## Preflight Safety Check
+# Data health {#sec-health}
 
-Run a check to ensure the data sources are up to date. Prints a checklist of each 
-assumption and halts the workbook if any failed.
+The gate for the cycle. The preflight check halts this workbook if the data is
+not ready, so everything below it can be trusted to be reading complete data.
 
 ```{r preflight}
 run_preflight_safety_check(con)
 ```
 
-## Resolve the reporting period (two weeks)
+## Reporting period and anomalies
 
 Most recent complete two-week (Monday-Sunday) block that actually has sign-in
 data. Graphs still plot weekly data points; this widens the period filters.
@@ -69,18 +243,11 @@ period_start <- period_end - 13L
 
 default_period_end <- monday_of(Sys.Date()) - 1L
 
-# Resolved period and data freshness; auto-prints as a labelled vector.
-c(period_start  = format(period_start),
-  period_end    = format(period_end),
-  max_data_date = format(max_data_date))
-
 if (period_end < default_period_end) {
   warning("warehouse lag: resolved period ends earlier than the default two ",
           "weeks through the most recent Sunday")
 }
 ```
-
-## Anomaly panel
 
 ```{r anomalies}
 auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
@@ -99,32 +266,82 @@ auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
 # Check from the actual launch date, not the launch week's Monday: Apr 20-21 are
 # legitimately empty (pre-launch) and would otherwise flag as missing every week.
 expected_days <- seq(as.Date(launch_date), as.Date(period_end), by = "day")
-# Named list auto-prints with each element labelled by its name.
-list(
-  missing_days = expected_days[!expected_days %in% auth_daily$day],
-  zero_success_days = auth_daily$day[auth_daily$successful_logins == 0]
+missing_days <- expected_days[!expected_days %in% auth_daily$day]
+zero_success_days <- auth_daily$day[auth_daily$successful_logins == 0]
+```
+
+```{r health-strip}
+#| echo: false
+lag_days <- as.integer(default_period_end - period_end)
+ok <- unname(colors$brand["forest"])
+bad <- unname(colors$brand["red"])
+
+status_strip(
+  status_card(
+    "Reporting period",
+    paste(format(period_start, "%b %d"), "-", format(period_end, "%b %d"))
+  ),
+  status_card("Latest data day", format(max_data_date, "%a %b %d")),
+  status_card(
+    "Warehouse lag",
+    if (lag_days > 0) paste(lag_days, "days") else "None",
+    if (lag_days > 0) bad else ok
+  ),
+  status_card(
+    "Missing days",
+    length(missing_days),
+    if (length(missing_days) > 0) bad else ok
+  ),
+  status_card(
+    "Zero sign-in days",
+    length(zero_success_days),
+    if (length(zero_success_days) > 0) bad else ok
+  )
 )
 ```
 
-## New relying parties (onboarding this period)
+Any day listed below is a day the warehouse has no rows for. An empty table is
+the expected, healthy result.
 
-```{r new-rps}
-tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
-  group_by(application_name) |>
-  summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
-  collect() |>
-  mutate(first_seen = as.Date(first_seen)) |>
-  filter(first_seen >= as.Date(period_start), first_seen <= as.Date(period_end)) |>
-  left_join(relying_parties, by = "application_name") |>
-  arrange(first_seen)
+::: {.column-page}
+::: {.grid}
+::: {.g-col-6}
+```{r tbl-missing}
+#| echo: false
+dash_table(
+  data.frame(missing_day = format(missing_days)),
+  height = 150,
+  columns = list(missing_day = colDef(name = "Missing day", align = "left"))
+)
 ```
+:::
+::: {.g-col-6}
+```{r tbl-zero}
+#| echo: false
+dash_table(
+  data.frame(zero_success_day = format(zero_success_days)),
+  height = 150,
+  columns = list(
+    zero_success_day = colDef(name = "Zero successful sign-ins", align = "left")
+  )
+)
+```
+:::
+:::
+:::
 
-## Headline: YTD unique users (cumulative reach since launch)
+# Growth {#sec-growth}
 
-The cumulative ytd column is monotonic within a week, so the week's value is its
-max. (Daily `unique_users` counts user-days and must not be summed.)
+The headline story every report opens with: is the userbase growing?
 
-```{r headline}
+## YTD unique users (cumulative reach since launch)
+
+`ytd_unique_users` is a stored, API-computed distinct count. The cumulative
+column is monotonic within a week, so the week's value is its max. Daily
+`unique_users` counts user-days and must never be summed. This figure is
+system-wide and cannot be filtered by app, so internal usage is folded in.
+
+```{r headline-data}
 ytd <- auth_daily |>
   mutate(week_start = monday_of(day)) |>
   group_by(week_start) |>
@@ -132,34 +349,64 @@ ytd <- auth_daily |>
   # Plot each week at its last day (Sunday week-ending date), not its start.
   mutate(week_end = week_start + 6) |>
   arrange(week_end)
+```
 
-print(ytd, n = 500)
-
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ytd}
+#| fig-alt: |
+#|   Line chart of cumulative year-to-date unique users by week since the April
+#|   2026 launch. The curve rises steadily throughout. The final reporting week
+#|   is marked with a red point and its value labelled.
 ggplot(ytd, aes(week_end, ytd_unique_users)) +
-  geom_line(color = colors$canada) +
+  geom_line(color = unname(colors$brand["blue"]), linewidth = 0.7) +
   geom_point(
-    data = subset(ytd, week_end == week_end[length(week_end)]),
-    color = colors$highlight[1], size = 3
+    data = slice_max(ytd, week_end, n = 1),
+    color = unname(colors$brand["red"]), size = 3
+  ) +
+  geom_text(
+    data = slice_max(ytd, week_end, n = 1),
+    aes(label = comma(ytd_unique_users)),
+    color = unname(colors$brand["red"]),
+    vjust = -1.2, hjust = 1, fontface = "bold", size = 3.4
   ) +
   scale_y_continuous(
     labels = comma, limits = c(0, NA),
-    expand = expansion(mult = c(0, 0.1))
+    expand = expansion(mult = c(0, 0.12))
   ) +
-  scale_x_date(breaks = ytd$week_end, date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "YTD unique users", title = "YTD unique users since launch")
+  scale_x_weeks(ytd$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "YTD unique users",
+       title = "YTD unique users since launch",
+       subtitle = "System-wide, internal usage included")
 ```
+:::
+::: {.g-col-5}
+```{r tbl-ytd}
+#| echo: false
+dash_table(
+  ytd |> select(week_end, ytd_unique_users),
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    ytd_unique_users = colDef(name = "YTD unique users",
+                              format = colFormat(separators = TRUE))
+  )
+)
+```
+:::
+:::
+:::
 
 ## Rolling 365-day unique users (true trailing-window reach)
 
-`rolling_365d_unique_users` is a stored distinct-user count over the trailing 365
-days, so unlike YTD it does not reset at the calendar boundary -- this is the
-metric the headline should migrate to once it has enough history (and before YTD's
-~Jan 2027 reset). It is null before its 2026-06-13 implementation date, so the
-series starts there rather than at launch.
+`rolling_365d_unique_users` is a stored distinct-user count over the trailing
+365 days, so unlike YTD it does not reset at the calendar boundary. This is the
+metric the headline should migrate to once it has enough history, and before
+YTD's roughly January 2027 reset. It is null before its 2026-06-13
+implementation date, so the series starts there rather than at launch.
 
-```{r rolling-365}
+```{r rolling-365-data}
 # Take each week's last available day, not the max: a trailing-365 count can fall
 # once users age out past 365 days, so max() would not equal the week-ending value.
 # (It currently tracks YTD because the window still reaches back before launch.)
@@ -172,62 +419,162 @@ rolling365 <- auth_daily |>
     .groups = "drop"
   ) |>
   arrange(week_end)
+```
 
-print(rolling365, n = 500)
-
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-rolling365}
+#| fig-alt: |
+#|   Line chart of rolling 365-day unique users by week, starting mid-June 2026
+#|   when the column was implemented. The series rises steadily and currently
+#|   tracks the year-to-date count. The latest week is marked in red.
 ggplot(rolling365, aes(week_end, rolling_365d_unique_users)) +
-  geom_line(color = colors$canada) +
+  geom_line(color = unname(colors$brand["blue"]), linewidth = 0.7) +
   geom_point(
-    data = subset(rolling365, week_end == week_end[length(week_end)]),
-    color = colors$highlight[1], size = 3
+    data = slice_max(rolling365, week_end, n = 1),
+    color = unname(colors$brand["red"]), size = 3
   ) +
   scale_y_continuous(
     labels = comma, limits = c(0, NA),
     expand = expansion(mult = c(0, 0.1))
   ) +
-  scale_x_date(breaks = rolling365$week_end, date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_weeks(rolling365$week_end) +
+  theme_dash() +
   labs(x = NULL, y = "Rolling 365-day unique users",
-       title = "Rolling 365-day unique users")
+       title = "Rolling 365-day unique users",
+       subtitle = "Null before 2026-06-13, so the series starts there")
 ```
+:::
+::: {.g-col-5}
+```{r tbl-rolling365}
+#| echo: false
+dash_table(
+  rolling365,
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    rolling_365d_unique_users = colDef(name = "Rolling 365d users",
+                                       format = colFormat(separators = TRUE))
+  )
+)
+```
+:::
+:::
+:::
 
-## Sign-in success rate (weekly)
+# Adoption {#sec-adoption}
 
-```{r success-rate}
-success_weekly <- auth_daily |>
-  mutate(week_end = monday_of(day) + 6) |>
-  group_by(week_end) |>
-  summarise(
-    successful_logins = sum(successful_logins, na.rm = TRUE),
-    failed_logins = sum(failed_logins, na.rm = TRUE),
-    .groups = "drop"
+Who is onboarding, and how far does CanadaLogin reach across services?
+
+## Relying parties and when they onboarded
+
+The full registry, in launch order, with the reporting period shaded. Anything
+landing inside the shaded band is new this period and is the editorial
+candidate: a newly onboarded relying party is worth a mention. Public parties
+take their brand colour; internal ones are greyed.
+
+```{r rp-timeline-data}
+rp_timeline <- relying_parties |>
+  mutate(
+    onboarded_this_period = launch_date >= period_start & launch_date <= period_end
   ) |>
-  mutate(success_rate = successful_logins / (successful_logins + failed_logins)) |>
-  arrange(week_end)
+  arrange(launch_date)
 
-print(success_weekly, n = 500)
+# First appearance in the data lake, as a cross-check on the registry's
+# launch_date. These should agree; a gap means the registry drifted.
+first_seen <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  group_by(application_name) |>
+  summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(first_seen = as.Date(first_seen))
 
-# Y-axis is left auto-scaled, not anchored at 0: in the workbook we want to see
-# the week-to-week deviations worth investigating, not a flat near-100% band.
-ggplot(success_weekly, aes(week_end, success_rate)) +
-  geom_line(color = colors$canada) +
-  geom_point(color = colors$canada, size = 1.6) +
-  scale_y_continuous(labels = percent) +
-  scale_x_date(breaks = success_weekly$week_end, date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "Sign-in success rate",
-       title = "Weekly sign-in success rate since launch")
+rp_timeline <- rp_timeline |>
+  left_join(first_seen, by = "application_name") |>
+  mutate(
+    app_row = reorder(application_name, -as.numeric(launch_date)),
+    # A party that launched after the period closes (DEC-CED, first seen Jul 13,
+    # against a period ending Jul 12) would otherwise draw a backwards segment.
+    # Clamp it so it collapses to just its point.
+    seg_end = if_else(launch_date > period_end, launch_date, period_end)
+  )
 ```
 
-## Adoption breadth: sign-ins by public application (reporting period)
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-rp-timeline}
+#| fig-alt: |
+#|   Horizontal timeline of every registered relying party ordered by launch
+#|   date, each drawn as a point at its launch with a line running to the end of
+#|   the reporting period. Public services are coloured, internal ones grey, and
+#|   the two-week reporting period is shaded.
+ggplot(rp_timeline) +
+  annotate(
+    "rect",
+    xmin = period_start, xmax = period_end, ymin = -Inf, ymax = Inf,
+    fill = unname(colors$brand["sky"]), alpha = 0.55
+  ) +
+  geom_segment(
+    aes(x = launch_date, xend = seg_end, y = app_row, yend = app_row,
+        color = is_internal),
+    linewidth = 0.9
+  ) +
+  geom_point(aes(x = launch_date, y = app_row, color = is_internal), size = 2.6) +
+  geom_point(
+    data = filter(rp_timeline, onboarded_this_period),
+    aes(x = launch_date, y = app_row), color = unname(colors$brand["orange"]),
+    size = 4.2, shape = 21, stroke = 1.4, fill = NA
+  ) +
+  # Internal takes greyscale mid-grey, not brand grounding grey: #D8D8D8 is
+  # within a hair of theme_bw()'s gridline colour, so the internal segments
+  # camouflaged into the grid and the parties read as bare dots.
+  scale_color_manual(
+    values = c(`FALSE` = unname(colors$brand["blue"]),
+               `TRUE` = unname(colors$greyscale[3])),
+    labels = c(`FALSE` = "Public", `TRUE` = "Internal"),
+    name = NULL
+  ) +
+  scale_x_date(date_labels = "%b %d") +
+  theme_dash() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5)) +
+  labs(x = NULL, y = NULL,
+       title = "Relying parties by launch date",
+       subtitle = "Shaded band is the reporting period; orange ring = new this period")
+```
+:::
+::: {.g-col-5}
+```{r tbl-rp-timeline}
+#| echo: false
+dash_table(
+  rp_timeline |>
+    select(application_name, service_name, operator, is_internal,
+           launch_date, first_seen, onboarded_this_period) |>
+    arrange(desc(launch_date)),
+  columns = list(
+    application_name = colDef(name = "Application", align = "left", minWidth = 170),
+    service_name = colDef(name = "Service", align = "left", minWidth = 130),
+    operator = colDef(name = "Operator", align = "left", minWidth = 150),
+    is_internal = colDef(name = "Internal", minWidth = 75),
+    launch_date = colDef(name = "Launch", align = "left"),
+    first_seen = colDef(name = "First seen", align = "left"),
+    onboarded_this_period = colDef(name = "New this period", minWidth = 110)
+  )
+)
+```
+:::
+:::
+:::
 
-Internal/system apps (per the registry) excluded so the view reflects genuine
-public adoption; joined to the registry for operator.
+## Sign-ins by public application
 
-```{r sign-ins-by-app}
-tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+Sum of `app_login_counts.total_logins`, which is not inflated the way
+system-wide `successful_logins` is. Internal and system apps are excluded per
+the registry, so this reflects genuine public adoption. The bar is the period
+snapshot; the line beside it is the same metric as a weekly trend since launch,
+which is the read to trust.
+
+```{r signins-data}
+signins_period <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   filter(
     from_date >= as.Date(period_start),
     from_date <= as.Date(period_end),
@@ -241,11 +588,7 @@ tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   arrange(desc(total_logins)) |>
   collect() |>
   left_join(relying_parties, by = "application_name")
-```
 
-### Weekly trend (since launch)
-
-```{r sign-ins-by-app-trend}
 signins_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   filter(
     from_date >= as.Date(launch_week_start),
@@ -263,28 +606,105 @@ signins_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   summarise(total_logins = sum(total_logins, na.rm = TRUE), .groups = "drop") |>
   left_join(relying_parties, by = "application_name") |>
   arrange(application_name, week_end)
-
-print(signins_weekly, n = 500)
-
-ggplot(signins_weekly, aes(week_end, total_logins, color = service_name)) +
-  geom_line() +
-  geom_point(size = 1.4) +
-  scale_color_manual(values = colors$primary) +
-  scale_y_continuous(labels = comma, limits = c(0, NA)) +
-  scale_x_date(breaks = unique(signins_weekly$week_end), date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "Sign-ins", color = "Service",
-       title = "Weekly sign-ins by public application since launch")
 ```
 
-### Stacked weekly sign-ins by public application
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-signins-period}
+#| fig-alt: |
+#|   Horizontal bar chart of sign-ins by public application over the two-week
+#|   reporting period, sorted largest to smallest, with each bar labelled by its
+#|   count and coloured by service.
+ggplot(
+  signins_period,
+  aes(total_logins, reorder(service_name, total_logins), fill = service_name)
+) +
+  geom_col(width = 0.68) +
+  geom_text(
+    aes(label = comma(total_logins)),
+    hjust = -0.15, size = 3.3, color = "grey25"
+  ) +
+  scale_fill_manual(values = palette_for(unique(signins_period$service_name),
+                                         app_colors)) +
+  scale_x_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.18))
+  ) +
+  theme_dash() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.position = "none") +
+  labs(x = "Sign-ins", y = NULL,
+       title = "Sign-ins by public application this period",
+       subtitle = paste(format(period_start, "%b %d"), "-",
+                        format(period_end, "%b %d"),
+                        "| internal apps excluded"))
+```
+:::
+::: {.g-col-5}
+```{r tbl-signins-period}
+#| echo: false
+dash_table(
+  signins_period |>
+    select(service_name, operator, total_logins, application_name),
+  columns = list(
+    service_name = colDef(name = "Service", align = "left", minWidth = 130),
+    operator = colDef(name = "Operator", align = "left", minWidth = 150),
+    total_logins = colDef(name = "Sign-ins", format = colFormat(separators = TRUE)),
+    application_name = colDef(name = "Application", align = "left", minWidth = 170)
+  )
+)
+```
+:::
+:::
+:::
 
-Same data as above but stacked to show total volume and each app's share.
-Applications below 1% of total sign-ins in the most recent week are binned
-into "Other" -- the chart may therefore hide low-traffic apps.
+### Weekly trend since launch
 
-```{r sign-ins-stacked}
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-signins-trend}
+#| fig-alt: |
+#|   Line chart of weekly sign-ins by public application from the April 2026
+#|   launch to the end of the reporting period, one line per service. Each
+#|   service keeps the same colour it has in every other chart on this page.
+ggplot(signins_weekly, aes(week_end, total_logins, color = service_name)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 1.4) +
+  scale_color_manual(values = palette_for(unique(signins_weekly$service_name),
+                                          app_colors)) +
+  scale_y_continuous(labels = comma, limits = c(0, NA)) +
+  scale_x_weeks(signins_weekly$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "Sign-ins", color = NULL,
+       title = "Weekly sign-ins by public application since launch")
+```
+:::
+::: {.g-col-5}
+```{r tbl-signins-trend}
+#| echo: false
+dash_table(
+  signins_weekly |> select(week_end, service_name, total_logins),
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    service_name = colDef(name = "Service", align = "left", minWidth = 130),
+    total_logins = colDef(name = "Sign-ins", format = colFormat(separators = TRUE))
+  )
+)
+```
+:::
+:::
+:::
+
+### Stacked weekly sign-ins
+
+Same data as the trend above, stacked to show total volume and each app's share.
+Applications below 1% of total sign-ins in the most recent week are binned into
+"Other", so the chart can hide low-traffic apps; the table beside it is the
+binned series exactly as plotted.
+
+```{r signins-stacked-data}
 latest_signin_week <- max(signins_weekly$week_end)
 latest_totals <- signins_weekly |>
   filter(week_end == latest_signin_week) |>
@@ -299,33 +719,61 @@ launch_order <- relying_parties |>
 stack_levels <- c(launch_order, "Other")
 
 signins_stacked <- signins_weekly |>
-  mutate(service_label = if_else(service_name %in% major_apps, service_name, "Other")) |>
+  mutate(service_label = if_else(service_name %in% major_apps,
+                                 service_name, "Other")) |>
   group_by(service_label, week_end) |>
   summarise(total_logins = sum(total_logins, na.rm = TRUE), .groups = "drop") |>
-  mutate(service_label = factor(service_label, levels = stack_levels))
-
-ggplot(signins_stacked, aes(week_end, total_logins, fill = service_label)) +
-  geom_col(position = position_stack(reverse = TRUE)) +
-  scale_fill_manual(values = c(colors$primary, unname(colors$missions$dark))) +
-  scale_y_continuous(labels = comma, limits = c(0, NA),
-                     expand = expansion(mult = c(0, 0.05))) +
-  scale_x_date(breaks = unique(signins_stacked$week_end), date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "Sign-ins", fill = "Service",
-       title = "Weekly sign-ins by public application (stacked)")
+  mutate(service_label = factor(service_label, levels = stack_levels)) |>
+  arrange(week_end, service_label)
 ```
 
-## Adoption curve by application (days since each app's own launch)
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-signins-stacked}
+#| fig-alt: |
+#|   Stacked bar chart of weekly sign-ins by public application since launch.
+#|   Total height is all public sign-ins for the week and each band is one
+#|   service's share, with low-traffic apps binned into a grey "Other" band.
+ggplot(signins_stacked, aes(week_end, total_logins, fill = service_label)) +
+  geom_col(position = position_stack(reverse = TRUE), width = 5.4) +
+  scale_fill_manual(values = palette_for(stack_levels, app_colors)) +
+  scale_y_continuous(labels = comma, limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.05))) +
+  scale_x_weeks(signins_stacked$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "Sign-ins", fill = NULL,
+       title = "Weekly sign-ins by public application (stacked)",
+       subtitle = "Apps under 1% of the latest week are binned into Other")
+```
+:::
+::: {.g-col-5}
+```{r tbl-signins-stacked}
+#| echo: false
+dash_table(
+  signins_stacked,
+  columns = list(
+    service_label = colDef(name = "Service (binned)", align = "left",
+                           minWidth = 140),
+    week_end = colDef(name = "Week ending", align = "left"),
+    total_logins = colDef(name = "Sign-ins", format = colFormat(separators = TRUE))
+  )
+)
+```
+:::
+:::
+:::
 
-Cumulative distinct users (`ytd_unique_users`) re-based so every public app starts
-at day 1 on its own launch date, capped at the first 90 days. Re-basing to
-days-since-launch lines the apps up head-to-head regardless of when they onboarded,
-so we can compare how quickly each builds reach in its first three months.
-Internal/system apps excluded. (Apps that launched recently only extend a short way
-along the x-axis; the 90-day cap is forward-looking.)
+## Adoption curve by application
 
-```{r adoption-curve}
+Cumulative distinct users (`ytd_unique_users`) re-based so every public app
+starts at day 1 on its own launch date, capped at the first 90 days. Re-basing
+lines the apps up head-to-head regardless of when they onboarded, so we can
+compare how quickly each builds reach in its first three months. Internal apps
+excluded. Recently launched apps only extend a short way along the x-axis; the
+90-day cap is forward-looking.
+
+```{r adoption-curve-data}
 adoption_curve <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   filter(
     from_date >= as.Date(launch_week_start),
@@ -351,31 +799,616 @@ adoption_curve <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   filter(days_since_launch <= 90) |>
   left_join(relying_parties, by = "application_name") |>
   arrange(service_name, days_since_launch)
-
-print(adoption_curve, n = 500)
-
-ggplot(adoption_curve, aes(days_since_launch, unique_users, color = service_name)) +
-  geom_line() +
-  geom_point(size = 1.2) +
-  scale_color_manual(values = colors$primary) +
-  scale_y_continuous(labels = comma, limits = c(0, NA)) +
-  scale_x_continuous(limits = c(1, 90), breaks = c(1, seq(15, 90, 15))) +
-  theme_bw() +
-  labs(x = "Days since app launch", y = "Cumulative unique users",
-       color = "Service",
-       title = "Adoption curve by public application",
-       subtitle = "Cumulative distinct users, re-based to each app's launch day (first 90 days)")
 ```
 
-## Applications per credential (cross-service reach, weekly)
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-adoption-curve}
+#| fig-alt: |
+#|   Line chart of cumulative unique users against days since each application's
+#|   own launch, one line per public service over the first 90 days. Re-basing to
+#|   day one lets services that onboarded months apart be compared head-to-head.
+ggplot(adoption_curve, aes(days_since_launch, unique_users, color = service_name)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 1.1) +
+  scale_color_manual(values = palette_for(unique(adoption_curve$service_name),
+                                          app_colors)) +
+  scale_y_continuous(labels = comma, limits = c(0, NA)) +
+  scale_x_continuous(limits = c(1, 90), breaks = c(1, seq(15, 90, 15))) +
+  theme_dash() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5)) +
+  labs(x = "Days since app launch", y = "Cumulative unique users", color = NULL,
+       title = "Adoption curve by public application",
+       subtitle = "Cumulative distinct users, re-based to each app's launch day")
+```
+:::
+::: {.g-col-5}
+```{r tbl-adoption-curve}
+#| echo: false
+dash_table(
+  adoption_curve |>
+    select(service_name, days_since_launch, day, unique_users),
+  columns = list(
+    service_name = colDef(name = "Service", align = "left", minWidth = 130),
+    days_since_launch = colDef(name = "Day", minWidth = 60),
+    day = colDef(name = "Date", align = "left"),
+    unique_users = colDef(name = "Cumulative users",
+                          format = colFormat(separators = TRUE))
+  )
+)
+```
+:::
+:::
+:::
 
-Sum of each app's cumulative YTD distinct users / overall CanadaLogin YTD distinct
-users (cookbook: applications-per-credential). 1.0 means the typical credential
-touches one application. The cookbook flags that internal apps (migration,
-profile-management) inflate this, so we show it both for all integrated apps and
-for public-facing apps only.
+# Sign-in success {#sec-success}
 
-```{r apps-per-credential}
+Meaningful as a trend, never as a standalone number. Only worth putting in a
+report when it deviates from trend, in either direction.
+
+```{r success-rate-data}
+success_weekly <- auth_daily |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(
+    successful_logins = sum(successful_logins, na.rm = TRUE),
+    failed_logins = sum(failed_logins, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(success_rate = successful_logins / (successful_logins + failed_logins)) |>
+  arrange(week_end)
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-success-rate}
+#| fig-alt: |
+#|   Line chart of the weekly sign-in success rate since launch. The y-axis is
+#|   auto-scaled rather than anchored at zero so week-to-week deviations are
+#|   visible instead of a flat band near 100%.
+# Y-axis is left auto-scaled, not anchored at 0: in the workbook we want to see
+# the week-to-week deviations worth investigating, not a flat near-100% band.
+ggplot(success_weekly, aes(week_end, success_rate)) +
+  geom_line(color = unname(colors$brand["blue"]), linewidth = 0.7) +
+  geom_point(color = unname(colors$brand["blue"]), size = 1.6) +
+  scale_y_continuous(labels = percent) +
+  scale_x_weeks(success_weekly$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "Sign-in success rate",
+       title = "Weekly sign-in success rate since launch",
+       subtitle = "Y-axis auto-scaled, not zero-anchored: read deviations, not level")
+```
+:::
+::: {.g-col-5}
+```{r tbl-success-rate}
+#| echo: false
+dash_table(
+  success_weekly,
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    successful_logins = colDef(name = "Successful",
+                               format = colFormat(separators = TRUE)),
+    failed_logins = colDef(name = "Failed", format = colFormat(separators = TRUE)),
+    success_rate = colDef(name = "Success rate",
+                          format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+# MFA and passkeys {#sec-mfa}
+
+## Factor mix and success this period
+
+One query per factor covering both volume and outcome, so the mix and the
+success rate are read off the same numbers. "sent" rows are excluded from the
+rate: it is computed from outcome events only. Read the rate alongside the
+volume, because low-volume factors post noisy rates.
+
+```{r mfa-period-data}
+# Merged: this replaces the two near-identical period queries the old workbook
+# ran (one pivoting success/failure, one recomputing the same attempts and rate
+# from the same filter). Same source, same filter, same period; the second was a
+# strict subset. Every column of both is kept here.
+mfa_period <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(period_start),
+    from_date <= as.Date(period_end),
+    result %in% c("success", "failure")
+  ) |>
+  group_by(mfa_type, result) |>
+  summarise(count = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  pivot_wider(names_from = result, values_from = count, values_fill = 0) |>
+  mutate(
+    total = success + failure,
+    success_rate = if_else(total > 0, success / total, NA_real_),
+    factor_label = mfa_label(mfa_type)
+  ) |>
+  arrange(desc(total))
+
+# Factors with no volume at all this period (kq, qr, totp, ibm_verify_push carry
+# count-0 rows) give total == 0, so success_rate is NA and both the bar and its
+# label silently vanish, leaving empty rows in the chart. Drop them from the
+# graph only; the table beside it keeps every factor.
+mfa_period_plot <- filter(mfa_period, total > 0)
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-mfa-success-by-factor}
+#| fig-alt: |
+#|   Horizontal bar chart of MFA success rate by factor for the reporting
+#|   period, sorted by rate, with each bar labelled by its rate and the number of
+#|   outcome events behind it so low-volume factors can be discounted.
+ggplot(
+  mfa_period_plot,
+  aes(success_rate, reorder(factor_label, success_rate), fill = factor_label)
+) +
+  geom_col(width = 0.68) +
+  geom_text(
+    aes(label = paste0(percent(success_rate, accuracy = 0.1),
+                       "  (n=", comma(total), ")")),
+    hjust = -0.08, size = 3.1, color = "grey25"
+  ) +
+  scale_fill_manual(values = palette_for(unique(mfa_period_plot$factor_label),
+                                         mfa_colors)) +
+  # Axis stops at 100% because a success rate cannot exceed it; padding the
+  # scale to fit the labels pushed the axis to a nonsensical 125%. Labels sit in
+  # the plot margin instead, via clip = "off".
+  scale_x_continuous(
+    labels = percent, limits = c(0, 1), breaks = seq(0, 1, 0.25),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_dash() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.position = "none",
+        plot.margin = margin(5.5, 78, 5.5, 5.5)) +
+  labs(x = "Success rate", y = NULL,
+       title = "MFA success rate by factor this period",
+       subtitle = "n is outcome events; low-volume factors post noisy rates")
+```
+:::
+::: {.g-col-5}
+```{r tbl-mfa-period}
+#| echo: false
+dash_table(
+  mfa_period |>
+    select(factor_label, mfa_type, success, failure, total, success_rate),
+  columns = list(
+    factor_label = colDef(name = "Factor", align = "left", minWidth = 130),
+    mfa_type = colDef(name = "mfa_type", align = "left", minWidth = 110),
+    success = colDef(format = colFormat(separators = TRUE)),
+    failure = colDef(format = colFormat(separators = TRUE)),
+    total = colDef(format = colFormat(separators = TRUE)),
+    success_rate = colDef(name = "Success rate",
+                          format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+### Factor mix (waffle)
+
+Canonical factor mix per the cookbook's mfa-activity-by-factor recipe: count
+"sent" for OTP types and outcomes for non-OTP, so OTP factors are not
+double-counted against non-OTP ones. FIDO2 has no "sent" event, so a query
+counting only "sent" rows would silently drop passkeys entirely.
+
+```{r mfa-waffle-data}
+otp_types <- c("sms_otp", "email_otp", "voice_otp")
+mfa_factor_mix <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(period_start),
+    from_date <= as.Date(period_end),
+    result == "sent" |
+      (result %in% c("success", "failure") & !mfa_type %in% otp_types)
+  ) |>
+  group_by(mfa_type) |>
+  summarise(mfa_auth = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  filter(mfa_auth > 0) |>
+  mutate(share = mfa_auth / sum(mfa_auth)) |>
+  arrange(desc(mfa_auth))
+
+# Round shares to whole percentage points and nudge the largest so the squares
+# sum to exactly 100: a clean 10-per-layer waffle where one square is 1%.
+mfa_waffle <- mfa_factor_mix |>
+  mutate(
+    factor_label = mfa_label(mfa_type),
+    pct = round(share * 100)
+  )
+mfa_waffle$pct[which.max(mfa_waffle$pct)] <-
+  mfa_waffle$pct[which.max(mfa_waffle$pct)] + (100L - sum(mfa_waffle$pct))
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-mfa-waffle}
+#| fig-alt: |
+#|   Waffle chart of the MFA factor mix for the reporting period. Each of the 100
+#|   squares represents one percent of MFA challenges, coloured by factor, so the
+#|   relative share of each second factor can be read at a glance.
+# geom_waffle0 (gap = 0) makes the squares touch with no white space between them.
+ggplot(mfa_waffle) +
+  geom_waffle0(aes(x = "MFA", y = pct, fill = factor_label), bricks_per_layer = 10) +
+  coord_waffle(10) +
+  scale_fill_manual(values = palette_for(unique(mfa_waffle$factor_label),
+                                         mfa_colors)) +
+  theme_cds() +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    legend.position = "bottom",
+    plot.title.position = "plot"
+  ) +
+  labs(
+    x = NULL, y = NULL, fill = NULL,
+    title = "MFA factor mix this period",
+    subtitle = "Each square is 1% of challenges (sent for OTP, outcomes for non-OTP)"
+  )
+```
+:::
+::: {.g-col-5}
+```{r tbl-mfa-waffle}
+#| echo: false
+dash_table(
+  mfa_waffle |> select(factor_label, mfa_type, mfa_auth, share, pct),
+  columns = list(
+    factor_label = colDef(name = "Factor", align = "left", minWidth = 130),
+    mfa_type = colDef(name = "mfa_type", align = "left", minWidth = 110),
+    mfa_auth = colDef(name = "Challenges", format = colFormat(separators = TRUE)),
+    share = colDef(name = "Share", format = colFormat(percent = TRUE, digits = 1)),
+    pct = colDef(name = "Squares", minWidth = 70)
+  )
+)
+```
+:::
+:::
+:::
+
+## Weekly MFA success rate and volume
+
+Two views of `mfa_weekly`: the rate, and the volume behind it. Read them
+together. A rate move on rising volume is a different story than the same move
+on flat volume.
+
+```{r mfa-weekly-data}
+mfa_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(launch_week_start),
+    from_date <= as.Date(period_end),
+    result %in% c("success", "failure")
+  ) |>
+  transmute(day = as.Date(from_date), result, count = as.double(count)) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(
+    outcomes = sum(count, na.rm = TRUE),
+    success_rate = sum(count[result == "success"], na.rm = TRUE) /
+      sum(count, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(week_end)
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-mfa-rate}
+#| fig-alt: |
+#|   Line chart of the weekly MFA success rate since launch, computed from
+#|   outcome events only.
+ggplot(mfa_weekly, aes(week_end, success_rate)) +
+  geom_line(color = unname(colors$brand["blue"]), linewidth = 0.7) +
+  geom_point(color = unname(colors$brand["blue"]), size = 1.6) +
+  scale_y_continuous(labels = percent) +
+  scale_x_weeks(mfa_weekly$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "MFA success rate",
+       title = "Weekly MFA success rate since launch")
+```
+
+```{r fig-mfa-volume}
+#| fig-alt: |
+#|   Bar chart of weekly MFA outcome event volume since launch, excluding "sent"
+#|   events, to be read alongside the success rate above it.
+ggplot(mfa_weekly, aes(week_end, outcomes)) +
+  geom_col(fill = unname(colors$brand["blue"]), width = 5.4) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  scale_x_weeks(mfa_weekly$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "MFA outcome events",
+       title = "Weekly MFA outcome volume since launch",
+       subtitle = "\"sent\" events excluded")
+```
+:::
+::: {.g-col-5}
+```{r tbl-mfa-weekly}
+#| echo: false
+dash_table(
+  mfa_weekly,
+  height = 790,
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    outcomes = colDef(name = "Outcome events", format = colFormat(separators = TRUE)),
+    success_rate = colDef(name = "Success rate",
+                          format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+## Weekly MFA success rate by factor
+
+Per-factor rate so we can spot whether one second factor is notably harder to
+clear than another. Factors below 0.5% of the latest week's attempts are hidden
+from the graph to keep it legible; the table beside it is unfiltered.
+
+```{r mfa-factor-trend-data}
+mfa_factor_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(launch_week_start),
+    from_date <= as.Date(period_end),
+    result %in% c("success", "failure")
+  ) |>
+  transmute(
+    day = as.Date(from_date),
+    mfa_type,
+    result,
+    count = as.double(count)
+  ) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(mfa_type, week_end) |>
+  summarise(
+    mfa_attempts = sum(count, na.rm = TRUE),
+    mfa_success_rate = sum(count[result == "success"], na.rm = TRUE) /
+      sum(count, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(factor_label = mfa_label(mfa_type)) |>
+  arrange(mfa_type, week_end)
+
+latest_week <- max(mfa_factor_weekly$week_end)
+latest_share <- mfa_factor_weekly |>
+  filter(week_end == latest_week) |>
+  mutate(share = mfa_attempts / sum(mfa_attempts, na.rm = TRUE))
+visible_factors <- latest_share$mfa_type[latest_share$share >= 0.005]
+
+high_volume_factors <- mfa_factor_weekly |>
+  filter(mfa_type %in% visible_factors)
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-mfa-factor-trend}
+#| fig-alt: |
+#|   Line chart of weekly MFA success rate by factor since launch, one line per
+#|   second factor, restricted to factors making up at least half a percent of
+#|   the latest week's attempts.
+ggplot(high_volume_factors, aes(week_end, mfa_success_rate, color = factor_label)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 1.4) +
+  scale_color_manual(values = palette_for(unique(high_volume_factors$factor_label),
+                                          mfa_colors)) +
+  scale_y_continuous(labels = percent) +
+  scale_x_weeks(mfa_factor_weekly$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "Success rate", color = NULL,
+       title = "Weekly MFA success rate by factor since launch",
+       subtitle = "Factors under 0.5% of the latest week are hidden")
+```
+:::
+::: {.g-col-5}
+```{r tbl-mfa-factor-trend}
+#| echo: false
+dash_table(
+  mfa_factor_weekly |>
+    select(week_end, factor_label, mfa_attempts, mfa_success_rate),
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    factor_label = colDef(name = "Factor", align = "left", minWidth = 130),
+    mfa_attempts = colDef(name = "Attempts", format = colFormat(separators = TRUE)),
+    mfa_success_rate = colDef(name = "Success rate",
+                              format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+## Passkeys (FIDO2): rollout
+
+Passkeys became generally available to the public on 2026-07-06. FIDO2 was
+already used internally before that date, and the data cannot separate internal
+from public passkey users, so the signal to watch is the change in FIDO2 volume
+and in its share of public sign-in factors once it went public, not an
+internal/external split.
+
+The factors restricted to here are the ones the public can sign in with
+(`sms_otp`, `voice_otp`, `fido2`). `email_otp` validates emails at sign-up, and
+kq/totp/qr/ibm_verify_push are internal. Counting is de-duplicated per the
+cookbook: "sent" for the OTP factors, outcomes for fido2, which has no "sent"
+event, so OTP is not double-counted against passkeys.
+
+```{r signin-factor-mix-data}
+otp_types <- c("sms_otp", "email_otp", "voice_otp")
+sign_in_types <- c("sms_otp", "voice_otp", "fido2")
+
+signin_factor_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(launch_week_start),
+    from_date <= as.Date(period_end),
+    mfa_type %in% sign_in_types,
+    result == "sent" |
+      (result %in% c("success", "failure") & !mfa_type %in% otp_types)
+  ) |>
+  transmute(day = as.Date(from_date), mfa_type, count = as.double(count)) |>
+  collect() |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end, mfa_type) |>
+  summarise(n = sum(count, na.rm = TRUE), .groups = "drop") |>
+  group_by(week_end) |>
+  mutate(share = n / sum(n)) |>
+  ungroup() |>
+  mutate(factor_label = mfa_label(mfa_type)) |>
+  arrange(mfa_type, week_end)
+
+passkey_rollout <- as.Date("2026-07-06")
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-passkey-volume}
+#| fig-alt: |
+#|   Bar chart of weekly passkey (FIDO2) sign-in events since launch. A dashed
+#|   vertical line marks the 2026-07-06 public rollout, against the flat
+#|   internal-only baseline before it.
+signin_factor_weekly |>
+  filter(mfa_type == "fido2") |>
+  ggplot(aes(week_end, n)) +
+  geom_col(fill = unname(colors$brand["orange"]), width = 5.4) +
+  geom_vline(xintercept = passkey_rollout, linetype = "dashed",
+             color = unname(colors$brand["red"])) +
+  scale_y_continuous(labels = comma, limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.1))) +
+  scale_x_weeks(signin_factor_weekly$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "Passkey (FIDO2) sign-in events",
+       title = "Weekly passkey usage since launch",
+       subtitle = "Dashed line marks the 2026-07-06 public rollout")
+```
+
+```{r fig-passkey-share}
+#| fig-alt: |
+#|   Line chart of the passkey share of public sign-in second factors by week,
+#|   with a dashed line at the 2026-07-06 public rollout.
+signin_factor_weekly |>
+  filter(mfa_type == "fido2") |>
+  ggplot(aes(week_end, share)) +
+  geom_line(color = unname(colors$brand["orange"]), linewidth = 0.7) +
+  geom_point(color = unname(colors$brand["orange"]), size = 1.6) +
+  geom_vline(xintercept = passkey_rollout, linetype = "dashed",
+             color = unname(colors$brand["red"])) +
+  scale_y_continuous(labels = percent, limits = c(0, NA)) +
+  scale_x_weeks(signin_factor_weekly$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "FIDO2 share of public sign-in factors",
+       title = "Passkey share of public sign-in second factors")
+```
+:::
+::: {.g-col-5}
+```{r tbl-signin-factor}
+#| echo: false
+dash_table(
+  signin_factor_weekly |> select(week_end, factor_label, n, share),
+  height = 790,
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    factor_label = colDef(name = "Factor", align = "left", minWidth = 130),
+    n = colDef(name = "Events", format = colFormat(separators = TRUE)),
+    share = colDef(name = "Share of sign-in factors",
+                   format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+### Daily passkey usage around the rollout
+
+Daily granularity, not the usual weekly points, because the rollout lands
+mid-period: a weekly series collapses the step-change into a single point.
+
+```{r passkey-daily-data}
+# Compute the window start in R, not inside filter(). RAthena renders
+# as.Date("2026-06-30") as an Athena DATE literal, so `as.Date(period_start) - 7L`
+# reaches the warehouse as `DATE '2026-06-30' - 7` and fails: Athena has no
+# date-minus-integer operator (it wants date_add). Hoisting the arithmetic here
+# keeps it R-side and sends a plain date literal.
+passkey_window_start <- period_start - 7L
+
+passkey_daily <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+  filter(
+    from_date >= as.Date(passkey_window_start),
+    from_date <= as.Date(period_end),
+    mfa_type == "fido2",
+    result %in% c("success", "failure")
+  ) |>
+  transmute(day = as.Date(from_date), count = as.double(count)) |>
+  collect() |>
+  group_by(day) |>
+  summarise(passkey_signins = sum(count, na.rm = TRUE), .groups = "drop") |>
+  arrange(day)
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-passkey-daily}
+#| fig-alt: |
+#|   Bar chart of daily passkey (FIDO2) sign-in events spanning the week before
+#|   the reporting period through its end, with a dashed line at the 2026-07-06
+#|   public rollout so the step-change is visible day by day.
+ggplot(passkey_daily, aes(day, passkey_signins)) +
+  geom_col(fill = unname(colors$brand["orange"])) +
+  geom_vline(xintercept = passkey_rollout, linetype = "dashed",
+             color = unname(colors$brand["red"])) +
+  scale_y_continuous(labels = comma, limits = c(0, NA),
+                     expand = expansion(mult = c(0, 0.1))) +
+  scale_x_date(date_breaks = "2 days", date_labels = "%b %d") +
+  theme_dash() +
+  labs(x = NULL, y = "Passkey (FIDO2) sign-in events",
+       title = "Daily passkey usage around the public rollout")
+```
+:::
+::: {.g-col-5}
+```{r tbl-passkey-daily}
+#| echo: false
+dash_table(
+  passkey_daily,
+  columns = list(
+    day = colDef(name = "Day", align = "left"),
+    passkey_signins = colDef(name = "Passkey sign-ins",
+                             format = colFormat(separators = TRUE))
+  )
+)
+```
+:::
+:::
+:::
+
+# Applications per credential {#sec-apc}
+
+Sum of each app's cumulative YTD distinct users divided by overall CanadaLogin
+YTD distinct users (cookbook: applications-per-credential). 1.0 means the
+typical credential touches one application. The cookbook flags that internal
+apps (migration, profile management) inflate this, so it is shown both for all
+integrated apps and for public-facing apps only.
+
+```{r apps-per-credential-data}
 # Per-week, take each cumulative series' week-ending value (ytd is monotonic
 # within a week, so the max), then form the ratio. auth_daily already holds the
 # overall YTD series; here we add the per-app sum, split by internal flag.
@@ -413,395 +1446,221 @@ apps_per_credential_weekly <- auth_daily |>
     apps_per_credential_public = sum_app_public / overall_unique_users
   ) |>
   arrange(week_end)
+```
 
-print(apps_per_credential_weekly, n = 500)
-
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-apps-per-credential}
+#| fig-alt: |
+#|   Line chart of applications per credential by week since launch, with one
+#|   line for all integrated applications and one for public-facing apps only. A
+#|   dashed reference line marks 1.0, one application per credential.
 apps_per_credential_weekly |>
   select(week_end,
          `All apps` = apps_per_credential,
          `Public only` = apps_per_credential_public) |>
   pivot_longer(-week_end, names_to = "scope", values_to = "apps_per_credential") |>
   ggplot(aes(week_end, apps_per_credential, color = scope)) +
-  geom_hline(yintercept = 1, linetype = "dashed", color = colors$greyscale[3]) +
-  geom_line() +
+  geom_hline(yintercept = 1, linetype = "dashed",
+             color = unname(colors$greyscale[3])) +
+  geom_line(linewidth = 0.7) +
   geom_point(size = 1.6) +
-  scale_color_manual(values = colors$primary) +
+  scale_color_manual(
+    values = c(`All apps` = unname(colors$brand["blue"]),
+               `Public only` = unname(colors$brand["orange"]))
+  ) +
   scale_y_continuous(limits = c(0, NA)) +
-  scale_x_date(breaks = apps_per_credential_weekly$week_end, date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_weeks(apps_per_credential_weekly$week_end) +
+  theme_dash() +
   labs(x = NULL, y = "Applications per credential", color = NULL,
        title = "Weekly applications per credential since launch",
-       subtitle = "All integrated apps vs public-facing only (internal excluded)")
+       subtitle = "All integrated apps vs public-facing only; dashed line is 1.0")
 ```
-
-## MFA factor mix and success (reporting period)
-
-"sent" rows dropped: success rate is computed from outcome events only.
-
-```{r mfa}
-tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
-  filter(
-    from_date >= as.Date(period_start),
-    from_date <= as.Date(period_end),
-    result %in% c("success", "failure")
-  ) |>
-  group_by(mfa_type, result) |>
-  summarise(count = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
-  collect() |>
-  pivot_wider(names_from = result, values_from = count, values_fill = 0) |>
-  mutate(
-    total = success + failure,
-    success_rate = if_else(total > 0, success / total, NA_real_)
-  ) |>
-  arrange(desc(total))
-```
-
-### Factor mix (waffle)
-
-```{r mfa-waffle}
-# Canonical factor mix (cookbook: mfa-activity-by-factor): count "sent" for OTP
-# types and outcomes for non-OTP, so OTP factors are not double-counted against
-# non-OTP ones. (This is the volume-mix view; the table above carries per-factor
-# success rates.)
-otp_types <- c("sms_otp", "email_otp", "voice_otp")
-mfa_factor_mix <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
-  filter(
-    from_date >= as.Date(period_start),
-    from_date <= as.Date(period_end),
-    result == "sent" |
-      (result %in% c("success", "failure") & !mfa_type %in% otp_types)
-  ) |>
-  group_by(mfa_type) |>
-  summarise(mfa_auth = sum(as.double(count), na.rm = TRUE), .groups = "drop") |>
-  collect() |>
-  filter(mfa_auth > 0) |>
-  mutate(share = mfa_auth / sum(mfa_auth)) |>
-  arrange(desc(mfa_auth))
-
-print(mfa_factor_mix, n = 500)
-
-# Friendly OTP labels so the workbook speaks the report's language (SMS OTP /
-# Email OTP / Voice OTP); non-OTP factors keep their raw mfa_type. Then round
-# shares to whole percentage points and nudge the largest so the squares sum to
-# exactly 100: a clean 10-per-layer waffle where one square represents 1%.
-otp_display <- c(sms_otp = "SMS OTP", email_otp = "Email OTP", voice_otp = "Voice OTP")
-mfa_waffle <- mfa_factor_mix |>
-  mutate(
-    factor_label = coalesce(unname(otp_display[mfa_type]), mfa_type),
-    pct = round(share * 100)
+:::
+::: {.g-col-5}
+```{r tbl-apps-per-credential}
+#| echo: false
+dash_table(
+  apps_per_credential_weekly,
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    overall_unique_users = colDef(name = "Overall YTD users",
+                                  format = colFormat(separators = TRUE)),
+    sum_app_all = colDef(name = "Sum app YTD (all)",
+                         format = colFormat(separators = TRUE)),
+    sum_app_public = colDef(name = "Sum app YTD (public)",
+                            format = colFormat(separators = TRUE)),
+    apps_per_credential = colDef(name = "Apps/credential (all)",
+                                 format = colFormat(digits = 2)),
+    apps_per_credential_public = colDef(name = "Apps/credential (public)",
+                                        format = colFormat(digits = 2))
   )
-mfa_waffle$pct[which.max(mfa_waffle$pct)] <-
-  mfa_waffle$pct[which.max(mfa_waffle$pct)] + (100L - sum(mfa_waffle$pct))
-
-# geom_waffle0 (gap = 0) makes the squares touch with no white space between them;
-# scale_fill_brewer pulls a ColorBrewer qualitative palette for clearer contrast.
-ggplot(mfa_waffle) +
-  geom_waffle0(aes(x = "MFA", y = pct, fill = factor_label), bricks_per_layer = 10) +
-  coord_waffle(10) +
-  scale_fill_brewer(palette = "Set1") +
-  theme_void() +
-  labs(
-    fill = "Factor", title = "MFA factor mix this period",
-    subtitle = paste0(
-      "Each square represents 1% of MFA challenges ",
-      "(sent for OTP, outcomes for non-OTP)"
-    )
-  )
+)
 ```
+:::
+:::
+:::
 
-### Weekly MFA success rate (since launch)
+# Call centre {#sec-calls}
 
-```{r mfa-trend}
-mfa_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
-  filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
-    result %in% c("success", "failure")
-  ) |>
-  transmute(day = as.Date(from_date), result, count = as.double(count)) |>
-  collect() |>
-  mutate(week_end = monday_of(day) + 6) |>
-  group_by(week_end) |>
-  summarise(
-    outcomes = sum(count, na.rm = TRUE),
-    success_rate = sum(count[result == "success"], na.rm = TRUE) /
-      sum(count, na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  arrange(week_end)
+Volume is very low, roughly 10-22 calls a week, so rate metrics like
+abandonment and service level are noise. Prefer counts and topic themes, exclude
+test calls, and always state the low volume. Call-centre weeks run
+Sunday-Saturday, not Monday-Sunday like the rest of this dashboard, and the feed
+lags, so these weeks will not line up with the reporting period. Do not force
+alignment.
 
-print(mfa_weekly, n = 500)
+## Weekly call volume
 
-ggplot(mfa_weekly, aes(week_end, success_rate)) +
-  geom_line(color = colors$canada) +
-  geom_point(color = colors$canada, size = 1.6) +
-  scale_y_continuous(labels = percent) +
-  scale_x_date(breaks = mfa_weekly$week_end, date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "MFA success rate",
-       title = "Weekly MFA success rate since launch")
-
-# Volume of MFA outcome events per week ("sent" excluded), to read alongside the
-# rate: a rate move on rising volume is a different story than on flat volume.
-ggplot(mfa_weekly, aes(week_end, outcomes)) +
-  geom_col(fill = colors$canada) +
-  scale_y_continuous(
-    labels = comma, limits = c(0, NA),
-    expand = expansion(mult = c(0, 0.1))
-  ) +
-  scale_x_date(breaks = mfa_weekly$week_end, date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "MFA outcome events",
-       title = "Weekly MFA outcome volume since launch")
-```
-
-## MFA success rate by factor
-
-Per-factor success rate so we can spot whether one second factor is notably
-harder to clear than another. "sent" rows excluded -- rate is from outcome
-events only. Read alongside `mfa_attempts`: low-volume factors post noisy rates.
-
-```{r mfa-success-by-factor}
-mfa_by_factor <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
-  filter(
-    from_date >= as.Date(period_start),
-    from_date <= as.Date(period_end),
-    result %in% c("success", "failure")
-  ) |>
-  group_by(mfa_type) |>
-  summarise(
-    mfa_attempts = sum(as.double(count), na.rm = TRUE),
-    mfa_success_rate =
-      sum(if_else(result == "success", as.double(count), 0), na.rm = TRUE) /
-        sum(as.double(count), na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  arrange(desc(mfa_attempts)) |>
-  collect()
-
-print(mfa_by_factor, n = 500)
-```
-
-### Weekly MFA success rate by factor (since launch)
-
-```{r mfa-success-by-factor-trend}
-mfa_factor_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
-  filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
-    result %in% c("success", "failure")
-  ) |>
-  transmute(
-    day = as.Date(from_date),
-    mfa_type,
-    result,
-    count = as.double(count)
-  ) |>
-  collect() |>
-  mutate(week_end = monday_of(day) + 6) |>
-  group_by(mfa_type, week_end) |>
-  summarise(
-    mfa_attempts = sum(count, na.rm = TRUE),
-    mfa_success_rate = sum(count[result == "success"], na.rm = TRUE) /
-      sum(count, na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  arrange(mfa_type, week_end)
-
-print(mfa_factor_weekly, n = 500)
-
-latest_week <- max(mfa_factor_weekly$week_end)
-latest_share <- mfa_factor_weekly |>
-  filter(week_end == latest_week) |>
-  mutate(share = mfa_attempts / sum(mfa_attempts, na.rm = TRUE))
-visible_factors <- latest_share$mfa_type[latest_share$share >= 0.005]
-
-high_volume_factors <- mfa_factor_weekly |>
-  filter(mfa_type %in% visible_factors)
-
-ggplot(high_volume_factors, aes(week_end, mfa_success_rate, color = mfa_type)) +
-  geom_line() +
-  geom_point(size = 1.4) +
-  scale_color_manual(values = c(colors$primary, unname(colors$missions$dark))) +
-  scale_y_continuous(labels = percent) +
-  scale_x_date(breaks = unique(mfa_factor_weekly$week_end), date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "Success rate", color = "Factor",
-       title = "Weekly MFA success rate by factor since launch")
-```
-
-## Passkeys (FIDO2): rollout and sign-in factor mix
-
-Passkeys became generally available to the public on 2026-07-06 (cookbook:
-sign-in-mfa-activity-by-factor). FIDO2 was already used internally before that
-date, and the data cannot separate internal from public passkey users, so the
-signal to watch is the change in FIDO2 volume and in its share of the public
-sign-in factors once it went public. Restrict to the factors the public can
-sign in with (sms_otp, voice_otp, fido2); email_otp validates emails at sign-up
-and kq/totp/qr/ibm_verify_push are internal. De-duplicate per the cookbook:
-count "sent" for the OTP factors and outcomes for fido2 (which has no "sent"
-event), so OTP is not double-counted against passkeys.
-
-### Weekly sign-in factor mix (since launch)
-
-```{r signin-factor-mix}
-otp_types <- c("sms_otp", "email_otp", "voice_otp")
-sign_in_types <- c("sms_otp", "voice_otp", "fido2")
-
-signin_factor_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
-  filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
-    mfa_type %in% sign_in_types,
-    result == "sent" |
-      (result %in% c("success", "failure") & !mfa_type %in% otp_types)
-  ) |>
-  transmute(day = as.Date(from_date), mfa_type, count = as.double(count)) |>
-  collect() |>
-  mutate(week_end = monday_of(day) + 6) |>
-  group_by(week_end, mfa_type) |>
-  summarise(n = sum(count, na.rm = TRUE), .groups = "drop") |>
-  group_by(week_end) |>
-  mutate(share = n / sum(n)) |>
-  ungroup() |>
-  arrange(mfa_type, week_end)
-
-print(signin_factor_weekly, n = 500)
-
-# Weekly FIDO2 volume, so the post-2026-07-06 jump is visible against the flat
-# internal-only baseline before it.
-signin_factor_weekly |>
-  filter(mfa_type == "fido2") |>
-  ggplot(aes(week_end, n)) +
-  geom_col(fill = colors$canada) +
-  geom_vline(xintercept = as.Date("2026-07-06"), linetype = "dashed",
-             color = colors$highlight[1]) +
-  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
-  scale_x_date(breaks = unique(signin_factor_weekly$week_end),
-               date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "Passkey (FIDO2) sign-in events",
-       title = "Weekly passkey usage since launch",
-       subtitle = "Dashed line marks the 2026-07-06 public rollout")
-
-# FIDO2 share of the public sign-in factors, week by week.
-signin_factor_weekly |>
-  filter(mfa_type == "fido2") |>
-  ggplot(aes(week_end, share)) +
-  geom_line(color = colors$canada) +
-  geom_point(color = colors$canada, size = 1.6) +
-  scale_y_continuous(labels = percent, limits = c(0, NA)) +
-  scale_x_date(breaks = unique(signin_factor_weekly$week_end),
-               date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "FIDO2 share of public sign-in factors",
-       title = "Passkey share of public sign-in second factors")
-```
-
-### Daily passkey usage around the rollout
-
-Daily granularity (not the usual weekly points) because the rollout lands
-mid-period: a weekly series collapses the step-change into a single point. FIDO2
-outcome events per day; the dashed line marks the 2026-07-06 rollout.
-
-```{r passkey-daily}
-passkey_daily <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
-  filter(
-    from_date >= as.Date(period_start) - 7L,
-    from_date <= as.Date(period_end),
-    mfa_type == "fido2",
-    result %in% c("success", "failure")
-  ) |>
-  transmute(day = as.Date(from_date), count = as.double(count)) |>
-  collect() |>
-  group_by(day) |>
-  summarise(passkey_signins = sum(count, na.rm = TRUE), .groups = "drop") |>
-  arrange(day)
-
-print(passkey_daily, n = 500)
-
-ggplot(passkey_daily, aes(day, passkey_signins)) +
-  geom_col(fill = colors$canada) +
-  geom_vline(xintercept = as.Date("2026-07-06"), linetype = "dashed",
-             color = colors$highlight[1]) +
-  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
-  scale_x_date(date_breaks = "2 days", date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "Passkey (FIDO2) sign-in events",
-       title = "Daily passkey usage around the public rollout")
-```
-
-## Call centre (reporting period)
-
-Test calls separated out; volumes are tiny, so prefer counts over rates.
-
-```{r call-centre}
+```{r calls-weekly-data}
 # weekly_activity_report stores its date columns as strings (catalog: "cast to
 # DATE when filtering"). It is a tiny table (one row per week), so collect it and
 # filter in R on parsed dates rather than wrestle Athena's date-cast translation.
-tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
+#
+# Merged: the old workbook collected this same table twice, once filtered to the
+# period and once all-time. The all-time pull is a superset, so one collect()
+# serves both; the test/genuine breakdown the period version carried is kept as
+# columns here, and the `in_period` flag marks the rows the period view showed.
+calls_weekly <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
   collect() |>
   mutate(
     date_range_start = as.Date(date_range_start),
-    date_range_end = as.Date(date_range_end)
-  ) |>
-  filter(date_range_start >= period_start, date_range_end <= period_end) |>
-  transmute(
-    date_range_start,
-    date_range_end,
+    date_range_end = as.Date(date_range_end),
     calls_answered = as.double(calls_answered),
     test_calls = as.double(test_calls),
-    genuine_calls = as.double(calls_answered) - as.double(test_calls)
-  )
+    genuine_calls = as.double(calls_answered) - as.double(test_calls),
+    week_end = date_range_end,
+    in_period = date_range_start >= period_start & date_range_end <= period_end
+  ) |>
+  filter(week_end <= period_end) |>
+  arrange(week_end)
+```
 
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-calls-weekly}
+#| fig-alt: |
+#|   Bar chart of weekly genuine call volume, excluding test calls, labelled by
+#|   week-ending date. Weeks falling inside the reporting period are highlighted
+#|   in red. Volumes are very low, in the low tens per week.
+ggplot(calls_weekly, aes(week_end, genuine_calls, fill = in_period)) +
+  geom_col(width = 5.4) +
+  scale_fill_manual(
+    values = c(`FALSE` = unname(colors$brand["blue"]),
+               `TRUE` = unname(colors$brand["red"])),
+    labels = c(`FALSE` = "Earlier weeks", `TRUE` = "In reporting period"),
+    name = NULL
+  ) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  scale_x_weeks(calls_weekly$week_end) +
+  theme_dash() +
+  labs(x = NULL, y = "Genuine calls",
+       title = "Weekly genuine call volume",
+       subtitle = "Sun-Sat weeks; test calls excluded; read direction, not precision")
+```
+:::
+::: {.g-col-5}
+```{r tbl-calls-weekly}
+#| echo: false
+dash_table(
+  calls_weekly |>
+    select(date_range_start, date_range_end, calls_answered, test_calls,
+           genuine_calls, in_period),
+  columns = list(
+    date_range_start = colDef(name = "Week start", align = "left"),
+    date_range_end = colDef(name = "Week end", align = "left"),
+    calls_answered = colDef(name = "Answered"),
+    test_calls = colDef(name = "Test"),
+    genuine_calls = colDef(name = "Genuine"),
+    in_period = colDef(name = "In period", minWidth = 85)
+  )
+)
+```
+:::
+:::
+:::
+
+## Call topics
+
+Top topics over the reporting period. This feeds the report's closing
+one-liner: "The call centre handled X calls over the past two weeks. People were
+typically calling about Y (ZZ% of calls)." A topic spike is the kind of change
+worth chasing down.
+
+```{r call-topics-data}
 # weekly_topic_dump has a real DATE column, call_date. Filter on it with as.Date()
 # literals: RAthena renders ISO date-like strings as Athena DATE literals, so a
 # date column compares cleanly (date >= date) while the string `date` mirror
 # would raise a varchar-vs-date mismatch.
-tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
+call_topics <- tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
   filter(call_date >= as.Date(period_start), call_date <= as.Date(period_end)) |>
   mutate(call_topic = str_squish(statobject)) |>
   count(call_topic, name = "topic_count") |>
   collect() |>
   mutate(topic_share = topic_count / sum(topic_count, na.rm = TRUE)) |>
-  arrange(desc(topic_count)) |>
-  head(10)
+  arrange(desc(topic_count))
+
+# Wrap, do not truncate. Topic strings run to 120 characters and two of them
+# share the prefix "Difficulties When Entering or Verifying the Email Address",
+# so any truncation short enough to fit would collapse two distinct topics into
+# one label. Wrapping keeps them legible and distinct at the cost of height.
+call_topics_top <- head(call_topics, 10) |>
+  mutate(topic_label = str_wrap(call_topic, 44))
 ```
 
-### Weekly genuine call volume (since launch)
-
-Volumes are tiny, so read this as direction, not precision; a topic spike is the
-kind of "big change" worth chasing down.
-
-```{r call-centre-trend}
-calls_weekly <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
-  collect() |>
-  mutate(
-    week_end = as.Date(date_range_end),
-    genuine_calls = as.double(calls_answered) - as.double(test_calls)
-  ) |>
-  filter(week_end <= period_end) |>
-  transmute(week_end, genuine_calls) |>
-  arrange(week_end)
-
-print(calls_weekly, n = 500)
-
-ggplot(calls_weekly, aes(week_end, genuine_calls)) +
-  geom_col(fill = colors$canada) +
-  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
-  scale_x_date(breaks = calls_weekly$week_end, date_labels = "%b %d") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(x = NULL, y = "Genuine calls", title = "Weekly genuine call volume")
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-call-topics}
+#| fig-height: 6.2
+#| fig-alt: |
+#|   Horizontal bar chart of the ten most common call centre topics over the
+#|   reporting period, sorted by count, each bar labelled with its call count and
+#|   share of calls. Total volume is very low, so shares rest on few calls.
+ggplot(
+  call_topics_top,
+  aes(topic_count, reorder(topic_label, topic_count))
+) +
+  geom_col(fill = unname(colors$brand["blue"]), width = 0.68) +
+  geom_text(
+    aes(label = paste0(topic_count, "  (",
+                       percent(topic_share, accuracy = 1), ")")),
+    hjust = -0.12, size = 3.1, color = "grey25"
+  ) +
+  scale_x_continuous(
+    limits = c(0, NA), expand = expansion(mult = c(0, 0.22)),
+    breaks = breaks_pretty()
+  ) +
+  theme_dash() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+        axis.text.y = element_text(size = 7.2, lineheight = 0.95)) +
+  labs(x = "Calls", y = NULL,
+       title = "Top call topics this period",
+       subtitle = paste0("n = ", sum(call_topics$topic_count),
+                         " calls total: very low volume, shares are indicative"))
 ```
+:::
+::: {.g-col-5}
+```{r tbl-call-topics}
+#| echo: false
+dash_table(
+  call_topics,
+  height = 560,
+  columns = list(
+    call_topic = colDef(name = "Topic", align = "left", minWidth = 200),
+    topic_count = colDef(name = "Calls"),
+    topic_share = colDef(name = "Share",
+                         format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
 
 ```{r teardown}
+#| include: false
 DBI::dbDisconnect(con)
 ```
