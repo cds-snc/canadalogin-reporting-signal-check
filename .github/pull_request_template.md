@@ -47,6 +47,7 @@ feat: add signal check edition N
 - [ ] Upload to Google Drive
 - [ ] Upload to SharePoint
 - [ ] Send the email to readers
+- [ ] Post in EDCP Teams channel
 - [ ] Post in #edcp-data-and-research
 - [ ] Crosspost link to #canadalogin
-- [ ] Add email text to publishing repository
+- [ ] Add message text to publishing repository
