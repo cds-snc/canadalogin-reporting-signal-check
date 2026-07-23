@@ -5,6 +5,7 @@ author: "EDCP Data and Research Team"  # example@cds-snc.ca
 date: "2026-01-01"
 params:
   edition: 0
+  ga_page_title: "Signal Check #0"
 format:
   html:
     embed-resources: true
@@ -155,3 +156,5 @@ Reports typically close with a short one-liner that sums up any low-volume
 supplementary data the report did not graph above.
 
 {{< include _footer.qmd >}}
+
+{{< include _analytics.qmd >}}

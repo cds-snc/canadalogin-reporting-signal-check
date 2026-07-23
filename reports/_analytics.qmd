@@ -1,0 +1,91 @@
+```{r analytics-tag}
+#| echo: false
+#| message: false
+#| warning: false
+#| results: asis
+
+# Google Analytics (GA4) tag, shared and unfrozen like _footer.qmd, so old
+# editions pick up the current tag on re-render.
+#
+# Two things not to "fix":
+#   - The loader is built with document.createElement. A literal <script src>
+#     gets fetched and inlined by pandoc under embed-resources (~7 MB a report).
+#   - No anonymize_ip: it is a Universal Analytics parameter, inert in GA4.
+#
+# The privacy settings below are only half the job; the rest are property-level
+# settings in the GA4 admin UI, which win where the two disagree.
+analytics_measurement_id <- "G-LCP5HXC91Q"
+
+analytics_edition <- if (exists("params") && !is.null(params$edition)) {
+  paste0(" #", params$edition)
+} else {
+  ""
+}
+
+# Every edition renders the same <title>, so page_title is overridden to tell
+# them apart: `ga_page_title` from the params block, else title + edition +
+# subtitle.
+analytics_title <- if (exists("params") && !is.null(params$ga_page_title)) {
+  params$ga_page_title
+} else {
+  paste0(
+    rmarkdown::metadata$title,
+    analytics_edition,
+    if (!is.null(rmarkdown::metadata$subtitle)) {
+      paste0(" - ", rmarkdown::metadata$subtitle)
+    }
+  )
+}
+
+cat(sprintf(
+  '<!-- Google tag (gtag.js) -->
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+
+  // Before config, so it applies to the first hit.
+  gtag("consent", "default", {
+    "ad_storage": "denied",
+    "ad_user_data": "denied",
+    "ad_personalization": "denied",
+    "analytics_storage": "granted"
+  });
+
+  gtag("js", new Date());
+
+  gtag("config", "%1$s", {
+    "page_title": "%2$s",
+    "allow_google_signals": false,
+    "allow_ad_personalization_signals": false,
+    "cookie_expires": 2592000
+  });
+
+  // Dwell time: fire each milestone once, counting only time the page is
+  // actually visible. Distinct event names rather than a parameter, so they
+  // report without registering a custom dimension in GA.
+  (function () {
+    var marks = [1, 5, 15, 30, 60, 120, 300, 600];
+    var visible = 0, i = 0, last = Date.now();
+    var timer = setInterval(function () {
+      var now = Date.now();
+      if (!document.hidden) visible += (now - last) / 1000;
+      last = now;
+      while (i < marks.length && visible >= marks[i]) {
+        gtag("event", "read_" + marks[i] + "s");
+        i++;
+      }
+      if (i >= marks.length) clearInterval(timer);
+    }, 1000);
+  })();
+
+  (function () {
+    var s = document.createElement("script");
+    s.async = true;
+    s.src = "https://www.googletagmanager.com/gtag/js?id=" + "%1$s";
+    document.head.appendChild(s);
+  })();
+</script>',
+  analytics_measurement_id,
+  gsub('"', "'", analytics_title, fixed = TRUE)
+))
+```

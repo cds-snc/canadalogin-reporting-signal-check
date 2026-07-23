@@ -5,6 +5,7 @@ author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
 date: "2026-06-29"
 params:
   edition: 1
+  ga_page_title: "CanadaLogin Signal Check #1"
 format:
   html:
     embed-resources: true
@@ -389,3 +390,5 @@ DBI::dbDisconnect(con)
 ```
 
 {{< include _footer.qmd >}}
+
+{{< include _analytics.qmd >}}
