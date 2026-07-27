@@ -356,7 +356,7 @@ dau_plot <- ggplot(auth_daily, aes(day, daily_users)) +
 add_cds_logo(add_watermark(dau_plot, date = report_date, edition = params$edition))
 ```
 
-That mid-July bump is worth a second look. A funding deadline at one department
+That mid-July IRIS bump is worth underscoring. A funding deadline at one department
 quintupled a service's traffic for five days, and we only worked out why by
 going and looking. More of CanadaLogin's week-to-week movement will come from
 outside our purview like this as partners come on. Departments do not tell us
