@@ -275,7 +275,7 @@ CanadaLogin metrics. This edition looks at the daily rhythm of the service,
 welcomes a new department, and introduces a measure we will be watching from
 here on: how much support demand all of this activity generates. If you missed
 the
-[last one](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/LM5dGtpn/20260713_signal-check.html),
+[last one](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/LM5dGtpn/20260713_signal-check.html?utm_source=report_link),
 it is a two-minute read. Feedback always welcome.
 
 **CanadaLogin crossed a milestone.** Cumulative unique users crossed 10,000 on
