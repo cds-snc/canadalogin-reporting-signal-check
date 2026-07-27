@@ -182,32 +182,37 @@ first_14_days <- app_daily |>
 # collect and filter in R on parsed dates. Its weeks run Sunday-Saturday and the
 # feed lags a full week, so they do not line up with the Mon-Sun reporting
 # period. Test calls are excluded throughout.
+#
+# The numerator is calls_accepted, not calls_answered: accepted counts everything
+# that reached the queue, so a caller who gave up waiting still counts as demand.
 call_weekly <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
   collect() |>
   mutate(
     week_start = as.Date(date_range_start),
     week_end = as.Date(date_range_end),
-    genuine_calls = as.double(calls_answered) - as.double(test_calls)
+    genuine_calls = as.double(calls_accepted) -
+      coalesce(as.double(test_calls), 0)
   ) |>
   filter(week_end <= call_window_end) |>
   select(week_start, week_end, genuine_calls) |>
   arrange(week_start)
 
-# Support demand: genuine calls per 100 daily active users, as first presented at
-# the 2026-07-23 demo. Both sides of the ratio are per-day averages over the same
-# Sunday-Saturday call-centre week (not the Mon-Sun reporting week), so the units
-# match: a week's calls over an average day's users would overstate it sevenfold.
+# Support demand: genuine calls per 100 daily active users, following the
+# cookbook's calls-per-active-user recipe, as first presented at the 2026-07-23
+# demo. A week's calls divided by that week's user-days (the sum of daily unique
+# users over the same Sunday-Saturday call-centre week, not the Mon-Sun reporting
+# week) is a per-day rate; a week of calls over one day's users would overstate it
+# sevenfold. Taking the day count from the data rather than hardcoding 7 keeps a
+# partial week honest.
 support_rate <- call_weekly |>
   rowwise() |>
   mutate(
-    week_days = as.integer(week_end - week_start) + 1L,
-    mean_daily_calls = genuine_calls / week_days,
-    mean_daily_users = mean(
+    user_days = sum(
       auth_daily$daily_users[
         auth_daily$day >= week_start & auth_daily$day <= week_end
       ]
     ),
-    calls_per_100 = 100 * mean_daily_calls / mean_daily_users
+    calls_per_100 = 100 * genuine_calls / user_days
   ) |>
   ungroup()
 
@@ -440,7 +445,7 @@ digitally confident start using the service.**
 ```{r support-graph}
 #| fig-alt: |
 #|   Line chart of genuine call centre calls per 100 daily active users, by week,
-#|   from late April to mid-July 2026. The rate is jumpy, between about 0.6 and
+#|   from late April to mid-July 2026. The rate is jumpy, between about 0.8 and
 #|   2.7 per 100 through the spring, then falls below 0.7 from late June as the
 #|   user base grows. The most recent week is marked in red.
 
