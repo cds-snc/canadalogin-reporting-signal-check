@@ -282,7 +282,10 @@ looks like. The day-to-day picture fills that in: about
 **`r comma(mean_dau_prior)`** in the previous two weeks. The service has a strong
 working-week rhythm, roughly **`r comma(weekday_dau)`** users on a weekday and
 **`r comma(weekend_dau)`** on a weekend day, which is what you would expect from
-a login service for government programs. The mid-period jump was **IRIS
+a sign in service whose relying parties are mostly used during office hours. That
+pattern is unlikely to hold: as more services aimed at the general public come
+on, we would expect more of the sign-ins to land in the evenings and on weekends,
+and the working-week shape to flatten. The mid-period jump was **IRIS
 (PrairiesCan)**: it ran at **`r comma(iris_burst)`** sign-ins over the five
 weekdays of July 13-17, against **`r comma(iris_baseline)`** the week before,
 peaking at **`r comma(iris_peak_users)`** users on
