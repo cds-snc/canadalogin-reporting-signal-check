@@ -1,0 +1,494 @@
+---
+title: "CanadaLogin Signal Check"
+subtitle: "For the two-week period of July 13-26"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-07-27"
+params:
+  edition: 3
+  ga_page_title: "CanadaLogin Signal Check #3"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries below are inlined and frozen to the July 13-26, 2026 reporting period
+# (the two complete Mon-Sun weeks ending on the most recent Sunday). This report
+# is a point-in-time record and must reproduce identically forever, so the bounds
+# and the relying-party facts are hardcoded literals rather than computed from
+# the render date. They are named once in the date block below and referenced by
+# name from there on, so no date is restated in more than one place.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(stringr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Watermark date: the date the report was first created.
+report_date <- as.Date("2026-07-27")
+
+# Public relying parties and their launch dates, frozen from the registry as of
+# 2026-07-27. Inlined rather than read from data/relying_parties.csv so a later
+# reclassification cannot change this report's analytical result. Internal apps
+# (Flow Application, GCS Migration Solution, Profile Management, the GC Digital
+# Talent pilot, the migration simulator) are excluded throughout.
+public_parties <- data.frame(
+  application_name = c(
+    "IRIS - PRC - Prod",
+    "VAC Healthshare - VAC - Prod",
+    "GC Digital Talent - TBS - Prod",
+    "DEC-CED - Prod"
+  ),
+  service_name = c(
+    "IRIS (PrairiesCan)",
+    "VAC Healthshare",
+    "GC Digital Talent",
+    "DEC-CED"
+  ),
+  launch_date = as.Date(c("2026-04-22", "2026-06-09", "2026-06-25", "2026-07-13")),
+  stringsAsFactors = FALSE
+)
+
+# Every date this report depends on, named once and hardcoded here. The literals
+# stay literals (the report must reproduce identically forever, so nothing is
+# derived from Sys.Date()), but each one is stated in a single place under a name
+# that says what it is for.
+#
+# The reporting period: the two complete Mon-Sun weeks ending on the most recent
+# Sunday, and the two weeks before them, used for the period-over-period read.
+period_start <- as.Date("2026-07-13")
+period_end <- as.Date("2026-07-26")
+prior_period_start <- as.Date("2026-06-29")
+prior_period_end <- as.Date("2026-07-12")
+
+# Left bound of every since-launch series: the Monday of the launch week. This is
+# two days before the service went live (2026-04-22), so weekly buckets start on
+# a Monday. The first week-ending Sunday sets the weekly axis breaks.
+series_start <- as.Date("2026-04-20")
+first_week_end <- series_start + 6
+
+# Call centre weeks run Sunday-Saturday and the feed lags a full week, so they do
+# not line up with the reporting period. This is the span of the two most recent
+# loaded weeks (July 5-11 and July 12-18); the second is the latest week with any
+# call data at all.
+call_window_start <- as.Date("2026-07-05")
+call_window_end <- as.Date("2026-07-18")
+prev_call_week_end <- as.Date("2026-07-11")
+
+# End of the pre-growth baseline the current support rate is compared against:
+# the last call-centre week before GC Digital Talent's launch changed the size of
+# the user base.
+early_support_end <- as.Date("2026-06-13")
+
+# Relying-party launches referenced outside the roster figure, taken from the
+# table above rather than restated, so there is one record of each launch date.
+launch_of <- function(service) {
+  public_parties$launch_date[public_parties$service_name == service]
+}
+dt_launch <- launch_of("GC Digital Talent")
+ced_launch <- launch_of("DEC-CED")
+
+# The mid-period surge in IRIS users and the equivalent five weekdays the week
+# before it, which the prose compares it against.
+iris_burst_start <- as.Date("2026-07-13")
+iris_burst_end <- as.Date("2026-07-17")
+iris_baseline_start <- as.Date("2026-07-06")
+iris_baseline_end <- as.Date("2026-07-10")
+
+# Daily active users, system-wide, launch through the period end. `unique_users`
+# is a per-day distinct count: it is the right daily measure but must never be
+# summed across days (that counts user-days, not people). `ytd_unique_users` is
+# the stored API-computed cumulative distinct count, used only for the milestone
+# figures quoted in the prose.
+auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  filter(from_date >= series_start, from_date <= period_end) |>
+  transmute(
+    day = as.Date(from_date),
+    daily_users = as.double(unique_users),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  arrange(day)
+
+# Trailing 7-day mean of daily active users, to read through the weekday/weekend
+# cycle. sides = 1 makes it trailing, so the first six days are NA rather than
+# borrowing from the future.
+auth_daily <- auth_daily |>
+  mutate(
+    rolling_7d = as.numeric(
+      stats::filter(daily_users, rep(1 / 7, 7), sides = 1)
+    )
+  )
+
+# Sign-ins by public service, daily, over the reporting period. total_logins is
+# the non-inflated sign-in count (unlike summed auth_total_logins events, where
+# each authentication factor counts separately).
+app_daily <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    from_date >= series_start,
+    from_date <= period_end,
+    application_name %in% c(
+      "IRIS - PRC - Prod",
+      "VAC Healthshare - VAC - Prod",
+      "GC Digital Talent - TBS - Prod",
+      "DEC-CED - Prod"
+    )
+  ) |>
+  transmute(
+    application_name,
+    day = as.Date(from_date),
+    total_logins = as.double(total_logins),
+    daily_users = as.double(unique_users),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  left_join(public_parties, by = "application_name") |>
+  arrange(service_name, day)
+
+# Launch-aligned comparison: each public service measured over its own first 14
+# days, so a two-week-old party is compared with the others at the same age
+# rather than at the same date. The cumulative distinct-user count on the last
+# in-window day is the service's reach at day 14.
+first_14_days <- app_daily |>
+  mutate(age_days = as.integer(day - launch_date)) |>
+  filter(age_days >= 0, age_days <= 13) |>
+  group_by(service_name, launch_date) |>
+  summarise(
+    users_14d = max(ytd_unique_users, na.rm = TRUE),
+    logins_14d = sum(total_logins, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(launch_date) |>
+  mutate(service_name = factor(service_name, levels = rev(service_name)))
+
+# Call centre: weekly_activity_report stores its date columns as strings
+# (catalog: cast to DATE when filtering); the table is tiny, one row per week, so
+# collect and filter in R on parsed dates. Its weeks run Sunday-Saturday and the
+# feed lags a full week, so they do not line up with the Mon-Sun reporting
+# period. Test calls are excluded throughout.
+#
+# The numerator is calls_accepted, not calls_answered: accepted counts everything
+# that reached the queue, so a caller who gave up waiting still counts as demand.
+call_weekly <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
+  collect() |>
+  mutate(
+    week_start = as.Date(date_range_start),
+    week_end = as.Date(date_range_end),
+    genuine_calls = as.double(calls_accepted) -
+      coalesce(as.double(test_calls), 0)
+  ) |>
+  filter(week_end <= call_window_end) |>
+  select(week_start, week_end, genuine_calls) |>
+  arrange(week_start)
+
+# Support demand: genuine calls per 100 daily active users, following the
+# cookbook's calls-per-active-user recipe, as first presented at the 2026-07-23
+# demo. A week's calls divided by that week's user-days (the sum of daily unique
+# users over the same Sunday-Saturday call-centre week, not the Mon-Sun reporting
+# week) is a per-day rate; a week of calls over one day's users would overstate it
+# sevenfold. Taking the day count from the data rather than hardcoding 7 keeps a
+# partial week honest.
+support_rate <- call_weekly |>
+  rowwise() |>
+  mutate(
+    user_days = sum(
+      auth_daily$daily_users[
+        auth_daily$day >= week_start & auth_daily$day <= week_end
+      ]
+    ),
+    calls_per_100 = 100 * genuine_calls / user_days
+  ) |>
+  ungroup()
+
+# weekly_topic_dump has a real DATE column, call_date, so it can be filtered
+# directly. The window is the two most recent loaded call-centre weeks (July 5-11
+# and July 12-18) so topics and counts describe the same days.
+call_topics <- tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
+  filter(call_date >= call_window_start, call_date <= call_window_end) |>
+  mutate(call_topic = str_squish(statobject)) |>
+  count(call_topic, name = "topic_count") |>
+  collect() |>
+  mutate(topic_share = topic_count / sum(topic_count, na.rm = TRUE)) |>
+  arrange(desc(topic_count))
+
+# Values referenced in the prose, so the text cannot drift from the queries.
+period <- auth_daily |> filter(day >= period_start)
+prior_period <- auth_daily |>
+  filter(day >= prior_period_start, day <= prior_period_end)
+
+latest_ytd <- max(auth_daily$ytd_unique_users)
+start_ytd <- auth_daily$ytd_unique_users[auth_daily$day == prior_period_end]
+net_new_period <- latest_ytd - start_ytd
+milestone_day <- min(auth_daily$day[auth_daily$ytd_unique_users >= 10000])
+
+mean_dau_period <- round(mean(period$daily_users))
+mean_dau_prior <- round(mean(prior_period$daily_users))
+is_weekend <- format(period$day, "%u") %in% c("6", "7")
+weekday_dau <- round(mean(period$daily_users[!is_weekend]))
+weekend_dau <- round(mean(period$daily_users[is_weekend]))
+
+# The mid-period spike: IRIS ran well above its own baseline for five weekdays
+# (July 13-17) before returning to it.
+iris <- app_daily |> filter(service_name == "IRIS (PrairiesCan)")
+iris_peak_day <- iris$day[which.max(iris$total_logins)]
+iris_peak_users <- max(iris$daily_users)
+iris_between <- function(from, to) {
+  sum(iris$total_logins[iris$day >= from & iris$day <= to])
+}
+iris_burst <- iris_between(iris_burst_start, iris_burst_end)
+iris_baseline <- iris_between(iris_baseline_start, iris_baseline_end)
+
+ced <- first_14_days |> filter(service_name == "DEC-CED")
+vac <- first_14_days |> filter(service_name == "VAC Healthshare")
+ced_share <- sum(app_daily$total_logins[app_daily$service_name == "DEC-CED"]) /
+  sum(app_daily$total_logins[app_daily$day >= period_start])
+
+latest_support <- support_rate |> slice_max(week_end, n = 1)
+prev_support <- support_rate |> filter(week_end == prev_call_week_end)
+early_support <- support_rate |> filter(week_end <= early_support_end)
+cc_recent_calls <- sum(
+  support_rate$genuine_calls[support_rate$week_end >= call_window_start]
+)
+cc_top <- call_topics[1, ]
+cc_iris_topic <- call_topics |>
+  filter(call_topic == "PrairiesCan and PacifiCan Application Portal")
+```
+
+Welcome back to the **CanadaLogin Signal Check**, our every-second-week read on
+CanadaLogin metrics. This edition looks at the daily rhythm of the service,
+welcomes a new department, and introduces a measure we will be watching from
+here on: how much support demand all of this activity generates. If you missed
+the
+[last one](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/REDACTED/20260713_signal-check.html),
+it is a two-minute read. Feedback always welcome.
+
+**CanadaLogin crossed a milestone.** Cumulative unique users crossed 10,000 on
+**`r format(milestone_day, "%B %d")`** and finished the period at
+**`r comma(latest_ytd)`**, up **`r comma(net_new_period)`** over the two weeks.
+That number only goes up, though, so it says little about what a normal day
+looks like. The day-to-day picture fills that in: about
+**`r comma(mean_dau_period)`** users sign in on a given day, up from
+**`r comma(mean_dau_prior)`** in the previous two weeks. The service has a strong
+working-week rhythm, roughly **`r comma(weekday_dau)`** users on a weekday and
+**`r comma(weekend_dau)`** on a weekend day, which is what you would expect from
+a sign in service whose relying parties are mostly used during office hours. That
+pattern is unlikely to hold: as more services aimed at the general public come
+on, we would expect more of the sign-ins to land in the evenings and on weekends,
+and the working-week shape to flatten. The mid-period jump was **IRIS
+(PrairiesCan)**: it ran at **`r comma(iris_burst)`** sign-ins over the five
+weekdays of July 13-17, against **`r comma(iris_baseline)`** the week before,
+peaking at **`r comma(iris_peak_users)`** users on
+**`r format(iris_peak_day, "%B %d")`** before settling back to its usual level.
+The timing lines up with a PrairiesCan funding
+[intake that closed at noon on July 17](https://www.canada.ca/en/prairies-economic-development/services/funding/build-communities-strong-fund.html),
+which would explain both the build-up and the drop the moment it passed. The
+call centre saw the same week from the other side, with the PrairiesCan and
+PacifiCan application portal accounting for
+**`r percent(cc_iris_topic$topic_share, accuracy = 1)`** of call topics.
+
+```{r dau-graph}
+#| fig-alt: |
+#|   Bar chart of daily active users on CanadaLogin from late April to late July
+#|   2026, with a line showing the trailing seven-day average. Bars rise and fall
+#|   in a weekly cycle with weekends low, step up sharply at the GC Digital
+#|   Talent launch in late June, and show a second smaller surge in mid-July
+#|   driven by IRIS users. The seven-day average climbs from about 70 to about
+#|   350 users a day. The
+#|   vertical axis is clipped at 860, so the launch day of 2,852 runs off the top
+#|   and is labelled with its true value.
+
+dau_plot <- ggplot(auth_daily, aes(day, daily_users)) +
+  geom_col(fill = colors$brand["sky"], width = 1) +
+  geom_line(
+    aes(y = rolling_7d),
+    color = colors$brand["blue"], linewidth = 1, na.rm = TRUE
+  ) +
+  annotate(
+    "text", x = dt_launch - 2, y = 800,
+    label = paste0(
+      "Jun 25: 2,852 users,\nGC Digital Talent launch day\n",
+      "(above the top of the chart)"
+    ),
+    hjust = 1, vjust = 1,
+    size = 2.8, color = colors$greyscale[2], lineheight = 0.95
+  ) +
+  annotate(
+    "segment", x = dt_launch, xend = dt_launch,
+    y = 690, yend = 830, color = colors$greyscale[2], linewidth = 0.4,
+    arrow = grid::arrow(length = unit(0.15, "cm"), type = "closed")
+  ) +
+  annotate(
+    "text", x = iris_burst_end, y = 723,
+    label = "Surge in IRIS users,\nJul 13-17", hjust = -0.1, vjust = 0.3,
+    size = 2.8, color = colors$greyscale[2], lineheight = 0.9
+  ) +
+  scale_y_continuous(
+    labels = comma, expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_x_date(
+    breaks = seq(first_week_end, period_end, by = "week"),
+    date_labels = "%b %d"
+  ) +
+  # The launch-day bar is roughly four times the next tallest, and plotting it in
+  # full flattens every other day into the bottom quarter of the panel. The axis
+  # is clipped so the weekday rhythm and the rising base are legible; the clipped
+  # day is annotated with its true value rather than silently cut.
+  coord_cartesian(ylim = c(0, 860)) +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Users signing in",
+    title = "A working-week rhythm, on a rising base",
+    subtitle = paste0(
+      "Daily active users since launch (bars) with the trailing ",
+      "seven-day average (line)"
+    )
+  )
+
+add_cds_logo(add_watermark(dau_plot, date = report_date, edition = params$edition))
+```
+
+That mid-July IRIS bump is worth underscoring. A funding deadline at one department
+quintupled a service's traffic for five days, and we only worked out why by
+going and looking. More of CanadaLogin's week-to-week movement will come from
+outside our purview like this as partners come on. Departments do not tell us
+their delivery calendars in advance, so expect us to be explaining these after
+the fact rather than predicting them.
+
+**Canada Economic Development for Quebec Regions joined on
+`r format(ced_launch, "%B %d")`.** Of all the
+relying parties using CanadaLogin, it is definitely one of them. DEC-CED brought
+**`r comma(ced$users_14d)`** users through in its first two weeks, about
+**`r percent(ced_share, accuracy = 1)`** of public sign-ins over the period,
+which on any chart of current volume would be a line you could not see. Judged
+at the same age rather than the same date, though, it is in ordinary company:
+VAC Healthshare had **`r comma(vac$users_14d)`** users at the same point in its
+life and has grown steadily since. New services start small, so a two-week count
+tells you how long a service has been live, not how well it serves Canadians.
+
+```{r roster-graph}
+#| fig-alt: |
+#|   Horizontal bar chart of the four public services on CanadaLogin, ordered by
+#|   launch date, showing how many users each had in its own first two weeks.
+#|   GC Digital Talent is far the largest at 3,675, IRIS second at 852, and VAC
+#|   Healthshare and the newly launched DEC-CED are both small, at 50 and 57.
+
+roster_plot <- ggplot(
+  first_14_days,
+  aes(users_14d, service_name, fill = service_name == "DEC-CED")
+) +
+  geom_col(width = 0.65) +
+  geom_text(
+    aes(label = comma(users_14d)),
+    hjust = -0.2, size = 3.4, fontface = "bold", color = colors$greyscale[1]
+  ) +
+  scale_fill_manual(values = c(
+    "TRUE" = unname(colors$brand_action["orange"]),
+    "FALSE" = unname(colors$brand["blue"])
+  )) +
+  scale_x_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.18))
+  ) +
+  # Each row is labelled with the service and its own launch date, so the chart
+  # doubles as a roster of who is on CanadaLogin and when they arrived.
+  scale_y_discrete(labels = function(x) {
+    launched <- first_14_days$launch_date[match(x, first_14_days$service_name)]
+    paste0(x, "\n", format(launched, "%b %d"))
+  }) +
+  guides(fill = "none") +
+  theme_cds() +
+  labs(
+    x = "Unique users, first two weeks after launch", y = NULL,
+    title = "Every service starts small, except the one that did not",
+    subtitle = "Public services by launch date, each over its own first 14 days"
+  )
+
+add_cds_logo(add_watermark(roster_plot, date = report_date, edition = params$edition))
+```
+
+**Support demand is low, and it has been falling as the service grows.** A
+measure we will keep an eye on from here on: genuine calls to the call centre for
+every 100 users who sign in on an average day. It is now
+**`r number(latest_support$calls_per_100, accuracy = 0.01)`** per 100 in the most
+recent loaded week, down from around
+**`r number(mean(early_support$calls_per_100), accuracy = 0.1)`** through May and
+early June, when the user base was a tenth of its current size. Fewer than one
+user in a hundred who signs in on a given day needs to call us. Call volumes
+are small enough that the number bounces around, from
+**`r number(prev_support$calls_per_100, accuracy = 0.01)`** to
+**`r number(latest_support$calls_per_100, accuracy = 0.01)`** across the two most
+recent weeks on **`r cc_recent_calls`** calls in total, so read the level rather
+than the week-to-week movement. A large share of today's users came through GC
+Digital Talent, who are applying for jobs in technology and are more comfortable
+than most with this kind of sign-in. **It is reasonable to expect this metric to
+increase as more relying parties onboard, and more Canadians who are less
+digitally confident start using the service.** 
+
+
+```{r support-graph}
+#| fig-alt: |
+#|   Line chart of genuine call centre calls per 100 daily active users, by week,
+#|   from late April to mid-July 2026. The rate is jumpy, between about 0.8 and
+#|   2.7 per 100 through the spring, then falls below 0.7 from late June as the
+#|   user base grows. The most recent week is marked in red.
+
+support_plot <- support_rate |>
+  mutate(is_current = week_end == max(week_end))
+
+support_fig <- ggplot(support_plot, aes(week_end, calls_per_100)) +
+  geom_line(color = colors$brand["blue"], linewidth = 1) +
+  geom_point(color = colors$brand["blue"], size = 1.6) +
+  geom_point(
+    data = subset(support_plot, is_current),
+    color = colors$brand["red"], size = 3.2
+  ) +
+  geom_text(
+    data = subset(support_plot, is_current),
+    aes(label = number(calls_per_100, accuracy = 0.01)),
+    color = colors$brand["red"], vjust = -1.1, fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_x_date(breaks = support_plot$week_end, date_labels = "%b %d") +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Calls per 100 daily users",
+    title = "Support demand per user keeps falling, for now",
+    subtitle = paste0(
+      "Genuine call centre calls per 100 daily active users, by week ",
+      "(test calls excluded)"
+    )
+  )
+
+add_cds_logo(add_watermark(support_fig, date = report_date, edition = params$edition))
+```
+
+Callers this period were still mostly after the basics, with what
+CanadaLogin is accounting for
+**`r percent(cc_top$topic_share, accuracy = 1)`** of topics, and DEC-CED
+generated its first call one week in.
+
+```{r teardown}
+DBI::dbDisconnect(con)
+```
+
+{{< include _footer.qmd >}}
+
+{{< include _analytics.qmd >}}

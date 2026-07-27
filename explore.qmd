@@ -1527,9 +1527,14 @@ calls_weekly <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
   mutate(
     date_range_start = as.Date(date_range_start),
     date_range_end = as.Date(date_range_end),
+    calls_accepted = as.double(calls_accepted),
     calls_answered = as.double(calls_answered),
     test_calls = as.double(test_calls),
-    genuine_calls = as.double(calls_answered) - as.double(test_calls),
+    # Accepted, not answered, per the cookbook's calls-per-active-user recipe:
+    # accepted covers everything that reached the queue, so a caller who gave up
+    # waiting still counts as demand. Answered is kept alongside it so the
+    # abandonment gap stays visible in the table.
+    genuine_calls = calls_accepted - coalesce(test_calls, 0),
     week_end = date_range_end,
     in_period = date_range_start >= period_start & date_range_end <= period_end
   ) |>
@@ -1566,11 +1571,12 @@ ggplot(calls_weekly, aes(week_end, genuine_calls, fill = in_period)) +
 #| echo: false
 dash_table(
   calls_weekly |>
-    select(date_range_start, date_range_end, calls_answered, test_calls,
-           genuine_calls, in_period),
+    select(date_range_start, date_range_end, calls_accepted, calls_answered,
+           test_calls, genuine_calls, in_period),
   columns = list(
     date_range_start = colDef(name = "Week start", align = "left"),
     date_range_end = colDef(name = "Week end", align = "left"),
+    calls_accepted = colDef(name = "Accepted"),
     calls_answered = colDef(name = "Answered"),
     test_calls = colDef(name = "Test"),
     genuine_calls = colDef(name = "Genuine"),
