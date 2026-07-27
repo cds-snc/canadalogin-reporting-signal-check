@@ -65,9 +65,19 @@ local path; Quarto's embed-resources inlines it into the self-contained HTML.
   var trigger = document.getElementById("cat-trigger");
   var egg = document.getElementById("cat-egg");
   if (!trigger || !egg) return;
+  // Counts discoveries, not clicks: fires the first time the cat is revealed on
+  // a page, so toggling it back and forth does not inflate the count. A bare
+  // event name, matching the dwell-time milestones in _analytics.qmd, keeps it
+  // reportable without registering a custom dimension. Guarded because this
+  // block is included before the GA tag.
+  var counted = false;
   trigger.addEventListener("click", function (e) {
     e.preventDefault();
-    egg.classList.toggle("cat-visible");
+    var shown = egg.classList.toggle("cat-visible");
+    if (shown && !counted && typeof gtag === "function") {
+      gtag("event", "easter_egg_cat");
+      counted = true;
+    }
   });
 })();
 </script>
