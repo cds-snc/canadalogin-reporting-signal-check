@@ -1,0 +1,445 @@
+---
+title: "CanadaLogin Signal Check"
+subtitle: "For the two-week period of July 27 to August 9"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-08-10"
+params:
+  edition: 4
+  ga_page_title: "CanadaLogin Signal Check #4"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries are inlined and frozen to the July 27 - August 9, 2026 period. Dates are
+# hardcoded literals, named once here, so the report reproduces identically forever.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(stringr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Watermark date: the date the report was first created.
+report_date <- as.Date("2026-08-10")
+
+# The reporting period, and the two weeks before it for comparison.
+period_start <- as.Date("2026-07-27")
+period_end <- as.Date("2026-08-09")
+prior_period_start <- as.Date("2026-07-13")
+prior_period_end <- as.Date("2026-07-26")
+
+# Left bound of since-launch series: the Monday of the launch week (live Apr 22).
+series_start <- as.Date("2026-04-20")
+first_week_end <- series_start + 6
+
+# GA exports on a two-day lag, so it stops short of the period end.
+ga_period_end <- as.Date("2026-08-08")
+
+# Call-centre weeks run Sun-Sat and the feed lags, so they do not align to the
+# period. Span of the two most recent loaded weeks.
+call_window_start <- as.Date("2026-07-19")
+call_window_end <- as.Date("2026-08-01")
+
+# System-wide daily figures. unique_users is a per-day distinct count, never
+# summed across days; ytd_unique_users is cumulative, read only at week ends.
+auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+  filter(from_date >= series_start, from_date <= period_end) |>
+  transmute(
+    day = as.Date(from_date),
+    daily_users = as.double(unique_users),
+    ytd_unique_users = as.double(ytd_unique_users)
+  ) |>
+  collect() |>
+  arrange(day)
+
+# Cumulative reach, one point per week at the week-ending Sunday.
+ytd_weekly <- auth_daily |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(ytd_unique_users = last(ytd_unique_users), .groups = "drop") |>
+  arrange(week_end) |>
+  mutate(is_current = week_end == period_end)
+
+# Net new users per two-week block, counting back from the period end, so this
+# period's growth is read against the run of periods before it rather than one.
+ytd_on <- function(d) ytd_weekly$ytd_unique_users[ytd_weekly$week_end == d]
+block_ends <- seq(period_end, by = "-14 days", length.out = 3)
+net_new_blocks <- vapply(block_ends, function(e) ytd_on(e) - ytd_on(e - 14),
+                         numeric(1))
+
+latest_ytd <- ytd_on(period_end)
+net_new_period <- net_new_blocks[1]
+net_new_prior <- net_new_blocks[2]
+net_new_prior_2 <- net_new_blocks[3]
+
+# Weekdays only: a blended average moves with the number of weekend days in the
+# window rather than with usage.
+weekday_mean <- function(from, to) {
+  in_window <- auth_daily$day >= from & auth_daily$day <= to &
+    !weekdays(auth_daily$day) %in% c("Saturday", "Sunday")
+  mean(auth_daily$daily_users[in_window])
+}
+mean_weekday_period <- weekday_mean(period_start, period_end)
+mean_weekday_prior <- weekday_mean(prior_period_start, prior_period_end)
+
+# Sign-up task success, straight from the stored metric. RESERVED_TOTAL is GA4's
+# all-party total; window_incomplete rows are trimmed windows, excluded from trends.
+signup_success <- tbl(
+  con, in_schema("google_analytics", "funnel_metrics_current")
+) |>
+  filter(
+    funnel_id == "sign_up",
+    metric_id == "task_success",
+    window_days == "7",
+    breakdown_value == "RESERVED_TOTAL",
+    !window_incomplete,
+    as.Date(window_end) <= as.Date(ga_period_end)
+  ) |>
+  transmute(
+    window_end = as.Date(window_end),
+    task_success_rate = as.double(value)
+  ) |>
+  collect() |>
+  filter(!is.na(task_success_rate)) |>
+  arrange(window_end) |>
+  mutate(is_current = window_end == max(window_end))
+
+signup_series_start <- min(signup_success$window_end)
+signup_low <- min(signup_success$task_success_rate)
+signup_high <- max(signup_success$task_success_rate)
+
+# The same metric on a single-day window, for contrast. Bounded to the 7-day
+# series' span so the two lines cover identical dates.
+signup_success_daily <- tbl(
+  con, in_schema("google_analytics", "funnel_metrics_current")
+) |>
+  filter(
+    funnel_id == "sign_up",
+    metric_id == "task_success",
+    window_days == "1",
+    breakdown_value == "RESERVED_TOTAL",
+    !window_incomplete,
+    as.Date(window_end) <= as.Date(ga_period_end)
+  ) |>
+  transmute(
+    window_end = as.Date(window_end),
+    task_success_rate = as.double(value)
+  ) |>
+  collect() |>
+  filter(!is.na(task_success_rate), window_end >= signup_series_start) |>
+  arrange(window_end)
+
+signup_daily_low <- min(signup_success_daily$task_success_rate)
+signup_daily_high <- max(signup_success_daily$task_success_rate)
+
+# Step counts behind the rate; funnel_metrics stores only the result. The 7-day
+# windows roll nightly, so the two non-overlapping weeks are picked by exact date.
+signup_week_2_end <- ga_period_end
+signup_week_1_end <- ga_period_end - 7
+
+signup_steps <- tbl(con, in_schema("google_analytics", "funnels_current")) |>
+  filter(
+    funnel_id == "sign_up",
+    window_days == "7",
+    breakdown_value == "RESERVED_TOTAL",
+    !window_incomplete,
+    funnelstepname %in% c("terms", "complete"),
+    as.Date(window_end) >= as.Date(signup_week_1_end),
+    as.Date(window_end) <= as.Date(signup_week_2_end)
+  ) |>
+  transmute(
+    window_end = as.Date(window_end),
+    window_start = as.Date(window_start),
+    step = funnelstepname,
+    users = as.double(activeusers)
+  ) |>
+  collect() |>
+  filter(window_end %in% c(signup_week_1_end, signup_week_2_end)) |>
+  pivot_wider(names_from = step, values_from = users) |>
+  arrange(window_end)
+
+# activeusers is not additive across windows, so the two-week rate is a weighted
+# average of the weekly rates. The counts are sums, so repeat starters count twice.
+signup_started <- sum(signup_steps$terms)
+signup_finished <- sum(signup_steps$complete)
+signup_rate_2wk <- weighted.mean(signup_steps$complete / signup_steps$terms,
+                                 w = signup_steps$terms)
+
+# Coverage: every completed sign-up renders one confirmation page GA can see and
+# creates one new IBM Verify user, so both sides count the same event.
+# July only. The funnel export starts Jul 7, and August new-user counts are unreliable.
+coverage_start <- as.Date("2026-07-07")
+coverage_end <- as.Date("2026-07-31")
+
+ga_signup_complete <- tbl(con, in_schema("google_analytics", "funnels_current")) |>
+  filter(
+    funnel_id == "sign_up",
+    window_days == "1",
+    breakdown_value == "RESERVED_TOTAL",
+    !window_incomplete,
+    funnelstepname == "complete",
+    as.Date(window_end) >= as.Date(coverage_start),
+    as.Date(window_end) <= as.Date(coverage_end)
+  ) |>
+  transmute(
+    day = as.Date(window_end),
+    ga_signups = as.double(activeusers)
+  ) |>
+  collect()
+
+# New users per day: the rise in the cumulative YTD distinct count. Nobody used
+# CanadaLogin before the April 2026 launch, so first seen this year means new.
+verify_new_users <- auth_daily |>
+  arrange(day) |>
+  mutate(new_users = ytd_unique_users - lag(ytd_unique_users)) |>
+  filter(day >= coverage_start, day <= coverage_end) |>
+  select(day, new_users)
+
+coverage_daily <- verify_new_users |>
+  inner_join(ga_signup_complete, by = "day") |>
+  arrange(day)
+
+# Exposure-weighted rate: day-level counts summed over days, not a distinct-user
+# total for the span, and not reported as one.
+coverage_pooled <- sum(coverage_daily$ga_signups) /
+  sum(coverage_daily$new_users)
+
+# weekly_activity_report stores dates as strings; tiny table, so filter in R.
+# calls_accepted counts everything that reached the queue. Test calls excluded.
+call_weekly <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
+  collect() |>
+  mutate(
+    week_end = as.Date(date_range_end),
+    genuine_calls = as.double(calls_accepted) -
+      coalesce(as.double(test_calls), 0)
+  ) |>
+  filter(week_end >= call_window_start, week_end <= call_window_end) |>
+  arrange(week_end)
+
+period_calls <- sum(call_weekly$genuine_calls)
+
+# Topics aligned to the same two weeks, so counts and topics agree.
+call_topics <- tbl(con, in_schema("call_centre", "weekly_topic_dump")) |>
+  filter(call_date >= as.Date(call_window_start),
+         call_date <= as.Date(call_window_end)) |>
+  mutate(call_topic = str_squish(statobject)) |>
+  count(call_topic, name = "topic_count") |>
+  collect() |>
+  mutate(topic_share = topic_count / sum(topic_count, na.rm = TRUE)) |>
+  arrange(desc(topic_count))
+
+cc_top <- call_topics[1, ]
+
+# "%d" zero-pads, which would read as "August 08".
+format_long_date <- function(d) {
+  paste0(format(d, "%B "), as.integer(format(d, "%d")))
+}
+```
+
+Welcome back to the **CanadaLogin Signal Check**, our every-second-week read on
+CanadaLogin metrics. A steady two weeks for the service, plus something new
+behind the scenes: Google Analytics data now lands in our reporting infrastructure, a
+task the D&R team has been working on for several months. It helps us monitor the
+service and catch problems in our own data sooner. We close on what it cannot
+see. If you missed
+the [last Signal Check](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/yfS8vlhQ/20260727_signal-check.html?utm_source=report_link),
+it is a two-minute read.
+
+**Growth held steady, and the userbase passed 12,000.** Cumulative unique users
+finished the period at **`r comma(latest_ytd)`**, up
+**`r comma(net_new_period)`** over the two weeks, after
+**`r comma(net_new_prior)`** and **`r comma(net_new_prior_2)`** in the two
+periods before it. The daily rhythm was just as steady: a typical weekday brought
+about **`r comma(round(mean_weekday_period))`** users, against
+**`r comma(round(mean_weekday_prior))`** in the previous two weeks.
+
+```{r ytd-graph}
+#| fig-alt: |
+#|   Line chart of cumulative unique users each week since the April 2026 launch.
+#|   The curve climbs steadily throughout, with a steeper stretch from late June,
+#|   ending at 12,114 users marked with a red point and label.
+ytd_plot <- ggplot(ytd_weekly, aes(week_end, ytd_unique_users)) +
+  geom_line(color = colors$brand["blue"], linewidth = 1) +
+  geom_point(
+    data = subset(ytd_weekly, is_current),
+    color = colors$brand["red"], size = 3.2
+  ) +
+  geom_text(
+    data = subset(ytd_weekly, is_current),
+    aes(label = comma(ytd_unique_users)),
+    color = colors$brand["red"], vjust = -1.1, fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_x_date(
+    breaks = seq(first_week_end, period_end, by = "week"),
+    date_labels = "%b %d"
+  ) +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Cumulative unique users",
+    title = "CanadaLogin passed 12,000 users",
+    subtitle = "Cumulative unique users by week since the April 2026 launch"
+  )
+
+add_cds_logo(add_watermark(ytd_plot, date = report_date,
+                           edition = params$edition))
+```
+
+**User traffic and task success data are now automatic.** Analytics data
+has been available pretty much since launch, but only by hand, through the
+Google Analytics interface. Staying on top of it was an arduous process. Now
+the sign-up and sign-in flows land in our warehouse nightly, with more to come.
+In the two weeks to **`r format_long_date(ga_period_end)`**,
+**`r comma(signup_started)`** people started the sign-up form and
+**`r comma(signup_finished)`** reached the confirmation screen,
+**`r percent(signup_rate_2wk, accuracy = 1)`**. Single days
+swing between **`r percent(signup_daily_low, accuracy = 1)`** and
+**`r percent(signup_daily_high, accuracy = 1)`**, so we read a longer window
+instead. On a seven-day average the rate is steady, between
+**`r percent(signup_low, accuracy = 1)`** and
+**`r percent(signup_high, accuracy = 1)`**. The monthly
+[Task Success Report](https://docs.google.com/document/d/1kZ49ObEBwIgVZHRkI5CRFmdnvStgteV8g6SgXhD_QJ4/edit?tab=t.0)
+remains the canonical source.
+
+```{r signup-success-graph}
+#| fig-alt: |
+#|   Chart of the sign-up completion rate through July and early August 2026, with
+#|   faint daily points scattered behind a bold rolling seven-day average line. The
+#|   daily points range between about 68 and 93 percent while the average holds
+#|   near 88 percent, ending at a red marked point.
+# Zero-anchored on purpose: a zoomed axis would make ordinary wobble look like a
+# trend. The daily series is deliberately faint; the average carries the message.
+signup_plot <- ggplot(mapping = aes(window_end, task_success_rate)) +
+  geom_point(
+    data = signup_success_daily,
+    aes(color = "Each day"), size = 1.3, alpha = 0.8
+  ) +
+  geom_line(
+    data = signup_success,
+    aes(color = "Rolling 7-day average"), linewidth = 1
+  ) +
+  geom_point(
+    data = subset(signup_success, is_current),
+    color = colors$brand["red"], size = 3.2
+  ) +
+  geom_text(
+    data = subset(signup_success, is_current),
+    aes(label = percent(task_success_rate, accuracy = 1)),
+    color = colors$brand["red"], vjust = -1.1, fontface = "bold", size = 3.6
+  ) +
+  scale_color_manual(
+    values = c(
+      `Each day` = unname(colors$greyscale[3]),
+      `Rolling 7-day average` = unname(colors$brand["forest"])
+    ),
+    breaks = c("Rolling 7-day average", "Each day")
+  ) +
+  scale_y_continuous(
+    labels = percent, limits = c(0, 1),
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+  theme_cds() +
+  labs(
+    x = NULL, y = "Completed sign-up", color = NULL,
+    title = "Nine in ten people who begin the sign-up form finish it",
+    subtitle = paste(
+      "Share of people starting the sign-up form who reach the",
+      "confirmation screen"
+    )
+  )
+
+add_cds_logo(add_watermark(signup_plot, date = report_date,
+                           edition = params$edition))
+```
+
+**Google Analytics does not see everyone.** GA only counts users whose browser
+runs its tag and accepts a cookie, and many people block that, through a
+corporate VPN or built-in ad blocking. IBM Verify records accounts on our own
+servers and does not depend on any of that, so it counts users reliably but in
+less detail. New accounts are the fairest thing to compare, because every
+completed sign-up renders one confirmation screen and creates one new user.
+Across July, Google
+Analytics saw about **`r percent(coverage_pooled, accuracy = 1)`** of them, so
+roughly **one in five** new users never appears in it. It is still the only place
+we can watch someone move through a flow, but every user number in this report
+comes from IBM Verify.
+
+```{r coverage-graph}
+#| fig-height: 4.2
+#| fig-alt: |
+#|   Line chart comparing new CanadaLogin accounts recorded daily by IBM Verify
+#|   against completed sign-ups counted by Google Analytics through July 2026.
+#|   The lines track each other closely, with Google Analytics usually below by
+#|   roughly a fifth.
+coverage_plot <- coverage_daily |>
+  select(day, verify = new_users, ga = ga_signups) |>
+  pivot_longer(-day, names_to = "source", values_to = "users") |>
+  ggplot(aes(day, users, color = source)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.8) +
+  # Labels are set here so the series keep short internal names.
+  scale_color_manual(
+    values = c(verify = unname(colors$brand["blue"]),
+               ga = unname(colors$brand_action["orange"])),
+    labels = c(verify = "New users according to IBM Verify",
+               ga = "New users according to Google Analytics"),
+    breaks = c("verify", "ga")
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+  theme_cds() +
+  theme(
+    legend.position = "bottom",
+    legend.box.spacing = unit(4, "pt"),
+    legend.key.height = unit(12, "pt"),
+    legend.margin = margin(0, 0, 0, 0)
+  ) +
+  guides(color = guide_legend(ncol = 1)) +
+  labs(
+    x = NULL, y = "New users", color = NULL,
+    title = "What Google Analytics sees against what IBM Verify records",
+    subtitle = "New CanadaLogin accounts each day, July 7 to July 31"
+  )
+
+add_cds_logo(add_watermark(coverage_plot, date = report_date,
+                           edition = params$edition))
+```
+
+To summarize:
+
+* **IBM Verify**: Accurate, but only cumulative counts and daily totals. It cannot see the steps in a flow. Good for reporting the number of users, but not for understanding how they got there.
+* **Google Analytics**: Detailed, can see the steps in a flow, but misses about one in five users. Good for a typical user's behavior, but not for reporting counts of things.
+
+The call centre handled **`r period_calls`** calls over the two most recent
+reported weeks, which end a little before this period does. The question people
+asked most often was simply **`r cc_top$call_topic`**
+(**`r percent(cc_top$topic_share, accuracy = 1)`** of topics raised).
+
+{{< include _footer.qmd >}}
+
+{{< include _analytics.qmd >}}
