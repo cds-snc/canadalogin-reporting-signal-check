@@ -2131,12 +2131,23 @@ users is invisible to it. IBM Verify counts authentications server-side and does
 not care about cookies, so it is the closest thing available to ground truth.
 Putting a matched pair of numbers side by side estimates what GA is missing.
 
-The pair has to be chosen carefully. Property-wide GA active users are useless
-for this: the property carries a large baseline of shallow, weekday-insensitive
-traffic that never touches a sign-in, so its ratio to Verify users swings between
-roughly 4x and 28x depending on the day of the week. The sign-in funnel's entry
-step is the right comparator, because reaching "enter your email" and
-authenticating are close to the same population on the same day.
+The pair has to be chosen carefully, and the choice of funnel step moves the
+answer by a lot.
+
+Property-wide GA active users are useless for this. The property carries a large
+baseline of shallow, weekday-insensitive traffic that never touches a sign-in, so
+its ratio to Verify users swings between roughly 4x and 28x depending on the day
+of the week.
+
+Within the sign-in funnel, the step matters because the two instruments start
+counting at different moments. IBM Verify only ever counts someone who actually
+authenticated. GA starts counting at the first page. Anyone who lands on "enter
+your email" and gives up is in the GA numerator and absent from the Verify
+denominator, which flatters the ratio. So the comparison uses **`mfa`, the last
+step GA can see**: reaching MFA selection means the password was already
+accepted, so that person is one Verify counted too. The entry step is kept
+alongside it as the looser bound, and the gap between the two is exactly the
+bail-out population.
 
 ```{r ga-coverage-data}
 ga_signin_daily <- tbl(con, in_schema("google_analytics", "funnels_current")) |>
@@ -2163,7 +2174,12 @@ ga_coverage <- ga_signin_daily |>
     by = "day"
   ) |>
   mutate(
-    coverage = ga_enter_email / verify_users,
+    # Primary measure: the last step GA can see. Reaching MFA selection means
+    # the password was accepted, so this person authenticated and Verify counted
+    # them too. The entry-step ratio is carried alongside as the loose upper
+    # bound; the difference between them is people who started and bailed.
+    coverage = ga_mfa / verify_users,
+    coverage_entry = ga_enter_email / verify_users,
     weekend = weekdays(day) %in% c("Saturday", "Sunday"),
     day_type = ifelse(weekend, "Weekend", "Weekday")
   ) |>
@@ -2175,7 +2191,9 @@ ga_coverage <- ga_signin_daily |>
 # rate, not a count of distinct users: neither numerator nor denominator is a
 # valid unique-user total over the span and neither is reported as one.
 ga_coverage_weekday <- ga_coverage |> filter(!weekend)
-coverage_pooled <- sum(ga_coverage_weekday$ga_enter_email) /
+coverage_pooled <- sum(ga_coverage_weekday$ga_mfa) /
+  sum(ga_coverage_weekday$verify_users)
+coverage_pooled_entry <- sum(ga_coverage_weekday$ga_enter_email) /
   sum(ga_coverage_weekday$verify_users)
 coverage_sd <- sd(ga_coverage_weekday$coverage)
 ```
@@ -2183,9 +2201,11 @@ coverage_sd <- sd(ga_coverage_weekday$coverage)
 ```{r ga-coverage-cards}
 #| echo: false
 status_strip(
-  status_card("Weekday GA coverage (pooled)", percent(coverage_pooled, 0.1)),
+  status_card("Weekday coverage (MFA step)", percent(coverage_pooled, 0.1)),
   status_card("Implied blind spot", percent(1 - coverage_pooled, 0.1),
               unname(colors$brand["orange"])),
+  status_card("Upper bound (entry step)", percent(coverage_pooled_entry, 0.1),
+              unname(colors$greyscale[3])),
   status_card("Day-to-day spread (sd)", percent(coverage_sd, 0.1)),
   status_card("Days compared", nrow(ga_coverage))
 )
@@ -2196,12 +2216,13 @@ status_strip(
 ::: {.g-col-7}
 ```{r fig-ga-coverage-levels}
 #| fig-alt: |
-#|   Line chart comparing daily users who reached the sign-in email step in
-#|   Google Analytics against daily unique users recorded by IBM Verify. The two
-#|   series track each other closely, with the Google Analytics line
-#|   consistently below the IBM Verify line.
+#|   Line chart comparing daily users who reached the sign-in MFA step in Google
+#|   Analytics against daily unique users recorded by IBM Verify, with the
+#|   Google Analytics entry step shown as a faint third line. The series track
+#|   each other closely, with both Google Analytics lines below IBM Verify.
 ga_coverage |>
   select(day, `IBM Verify unique users` = verify_users,
+         `GA sign-in MFA step` = ga_mfa,
          `GA sign-in entry step` = ga_enter_email) |>
   pivot_longer(-day, names_to = "source", values_to = "users") |>
   ggplot(aes(day, users, color = source)) +
@@ -2209,7 +2230,8 @@ ga_coverage |>
   geom_point(size = 1.3) +
   scale_color_manual(
     values = c(`IBM Verify unique users` = unname(colors$brand["blue"]),
-               `GA sign-in entry step` = unname(colors$brand["orange"]))
+               `GA sign-in MFA step` = unname(colors$brand["orange"]),
+               `GA sign-in entry step` = unname(colors$greyscale[3]))
   ) +
   scale_y_continuous(limits = c(0, NA), labels = comma) +
   scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
@@ -2224,7 +2246,8 @@ ga_coverage |>
 #| echo: false
 dash_table(
   ga_coverage |>
-    select(day, day_type, ga_enter_email, ga_mfa, verify_users, coverage) |>
+    select(day, day_type, ga_enter_email, ga_mfa, verify_users, coverage,
+           coverage_entry) |>
     arrange(desc(day)),
   columns = list(
     day = colDef(name = "Day", align = "left"),
@@ -2235,8 +2258,10 @@ dash_table(
                     format = colFormat(separators = TRUE)),
     verify_users = colDef(name = "Verify users",
                           format = colFormat(separators = TRUE)),
-    coverage = colDef(name = "Coverage",
-                      format = colFormat(percent = TRUE, digits = 1))
+    coverage = colDef(name = "Coverage (MFA)",
+                      format = colFormat(percent = TRUE, digits = 1)),
+    coverage_entry = colDef(name = "Coverage (entry)",
+                            format = colFormat(percent = TRUE, digits = 1))
   )
 )
 ```
@@ -2249,15 +2274,22 @@ dash_table(
 ::: {.g-col-7}
 ```{r fig-ga-coverage-ratio}
 #| fig-alt: |
-#|   Scatter and line chart of daily Google Analytics coverage, the share of IBM
-#|   Verify users that Google Analytics also counted, with weekdays and weekends
-#|   distinguished and a dashed line at the pooled weekday average of about 83
-#|   percent. Weekdays sit in a tight band; weekends scatter far wider.
-ggplot(ga_coverage, aes(day, coverage)) +
+#|   Chart of daily Google Analytics coverage as a share of IBM Verify users,
+#|   showing a shaded band between the MFA-step measure and the higher
+#|   entry-step measure. Weekday points sit in a tight band around two thirds on
+#|   the MFA measure; weekends fall lower and scatter wider.
+# The ribbon between the two measures is the point of this chart: the true
+# coverage sits inside it, and its width is the bail-out population.
+ggplot(ga_coverage, aes(day)) +
+  geom_ribbon(aes(ymin = coverage, ymax = coverage_entry),
+              fill = unname(colors$brand["sky"]), alpha = 0.7) +
   geom_hline(yintercept = coverage_pooled, linetype = "dashed",
              color = unname(colors$brand["red"])) +
-  geom_line(color = unname(colors$greyscale[3]), linewidth = 0.4) +
-  geom_point(aes(color = day_type), size = 2.2) +
+  geom_line(aes(y = coverage_entry), color = unname(colors$greyscale[3]),
+            linewidth = 0.5) +
+  geom_line(aes(y = coverage), color = unname(colors$greyscale[3]),
+            linewidth = 0.4) +
+  geom_point(aes(y = coverage, color = day_type), size = 2.2) +
   scale_color_manual(values = c(Weekday = unname(colors$brand["blue"]),
                                 Weekend = unname(colors$brand["orange"]))) +
   scale_y_continuous(labels = percent, limits = c(0, 1)) +
@@ -2265,8 +2297,9 @@ ggplot(ga_coverage, aes(day, coverage)) +
   theme_dash() +
   labs(x = NULL, y = "GA coverage of Verify users", color = NULL,
        title = "Daily Google Analytics coverage",
-       subtitle = glue("Dashed line is the pooled weekday rate, ",
-                       "{percent(coverage_pooled, 0.1)}"))
+       subtitle = glue("Points are the MFA-step measure; band reaches up to ",
+                       "the entry step. Dashed line is the pooled weekday ",
+                       "rate, {percent(coverage_pooled, 0.1)}"))
 ```
 :::
 ::: {.g-col-5}
@@ -2277,7 +2310,8 @@ dash_table(
     group_by(day_type) |>
     summarise(
       days = n(),
-      pooled = sum(ga_enter_email) / sum(verify_users),
+      pooled = sum(ga_mfa) / sum(verify_users),
+      pooled_entry = sum(ga_enter_email) / sum(verify_users),
       mean_coverage = mean(coverage),
       min_coverage = min(coverage),
       max_coverage = max(coverage),
@@ -2287,8 +2321,10 @@ dash_table(
   columns = list(
     day_type = colDef(name = "Day type", align = "left"),
     days = colDef(name = "Days", maxWidth = 70),
-    pooled = colDef(name = "Pooled",
+    pooled = colDef(name = "Pooled (MFA)",
                     format = colFormat(percent = TRUE, digits = 1)),
+    pooled_entry = colDef(name = "Pooled (entry)",
+                          format = colFormat(percent = TRUE, digits = 1)),
     mean_coverage = colDef(name = "Mean",
                            format = colFormat(percent = TRUE, digits = 1)),
     min_coverage = colDef(name = "Min",
@@ -2302,23 +2338,23 @@ dash_table(
 :::
 :::
 
-Read this as an estimate with a known direction of error, not a measurement.
-Two things push the ratio up and one pushes it down, and they do not cancel:
+Read this as a bracket, not a measurement. Moving to the MFA step removed the
+largest source of inflation, but two smaller effects remain and they point in
+opposite directions:
 
-- Some people reach the email step and never authenticate (wrong account, gave
-  up, bounced). GA counts them, Verify does not, which inflates coverage.
-- Some authentications never render the email step at all, such as a session
-  resumed inside its lifetime. Verify counts them, GA does not, which deflates
-  coverage.
+- Some authentications never render the MFA step at all, such as a session
+  resumed inside its lifetime or a device already trusted. Verify counts them,
+  GA does not, so the MFA measure runs low. This is what makes it the
+  conservative end of the band.
 - GA active users are browsers, not people. One person on a phone and a laptop
-  is two GA users but one Verify user, which inflates coverage.
+  is two GA users but one Verify user, which pushes coverage up.
 
-The first and third are the larger effects, so the true share of users GA can see
-is more likely below the headline figure than above it. Treat it as an upper
-bound on coverage, and therefore a lower bound on the blind spot. What it is
-genuinely good for is the correction factor: when a GA-only number needs to be
-talked about as if it described all users, this is roughly how much of the real
-population it stands for.
+So the true figure sits somewhere inside the shaded band, nearer its floor than
+its ceiling. Quote the MFA number when the point is how much is missing, since
+it is the defensible worst case, and never quote either end as a measured value.
+What the band is genuinely good for is the correction factor: when a GA-only
+number has to be discussed as if it described everyone, this is roughly how much
+of the real population it stands for.
 
 # Call centre {#sec-calls}
 
