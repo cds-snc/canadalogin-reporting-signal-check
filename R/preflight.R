@@ -22,10 +22,16 @@
 #'   3. Call centre current - allowing the feed's full-week lag, the Sun-Sat week
 #'      before the most recent complete one is loaded in weekly_activity_report,
 #'      with at least one (sparse) weekly_topic_dump entry inside that week.
+#'   4. Google Analytics current - allowing the export's deliberate two-day lag
+#'      (`ga_export_lag_days`), property_traffic runs through today minus that
+#'      lag with no gaps. This checks the export is current for its own lag, not
+#'      that it covers the reporting period; it never does by the time a report
+#'      is written, which is a caveat for the prose rather than a gate.
 
 run_preflight_safety_check <- function(con,
                                        csv_path = "data/relying_parties.csv",
-                                       today = Sys.Date()) {
+                                       today = Sys.Date(),
+                                       ga_export_lag_days = 2L) {
 
   # Helpers --------------------------------------------------------------------
 
@@ -243,6 +249,64 @@ run_preflight_safety_check <- function(con,
         topic_dump_detail)
     } else {
       call_centre_problems
+    }
+  )
+
+  # Check 4 - the Google Analytics export is current (allowing its 2-day lag) --
+
+  # What this check does and does not assert. It asserts that the GA export is
+  # current *for its own lag*: the pipeline pulls each day two days late on
+  # purpose, because GA4 takes 24-48 hours to finish processing a day's events
+  # and each day is written once and never re-pulled, so a window read early
+  # would stay artificially low forever.
+  #
+  # It deliberately does NOT require GA to cover the reporting period. It cannot:
+  # the period ends on a Sunday and the report is written the next morning, when
+  # the export has only reached Saturday, so a coverage requirement would fail
+  # every single cycle and train people to wave the gate through. How far GA
+  # falls short of the period is a real thing to know, but it is a fact to carry
+  # into the writing, not a reason to halt - explore.qmd surfaces it as
+  # `ga_short_days` beside the other data-health cards.
+  expected_ga_end <- today - ga_export_lag_days
+
+  ga_days_with_data <- tbl(
+    con, in_schema("google_analytics", "property_traffic")
+  ) |>
+    filter(as.Date(date) >= as.Date(reporting_period_start),
+           as.Date(date) <= as.Date(expected_ga_end)) |>
+    transmute(day = as.Date(date)) |>
+    distinct() |>
+    collect() |>
+    pull(day)
+
+  expected_ga_days <- seq(reporting_period_start, expected_ga_end, by = "day")
+  missing_ga_days <- expected_ga_days[!expected_ga_days %in% ga_days_with_data]
+  latest_ga_day <- if (length(ga_days_with_data) > 0) {
+    max(ga_days_with_data)
+  } else {
+    NA
+  }
+
+  record_check(
+    4,
+    glue("Google Analytics current, allowing its ",
+         "{ga_export_lag_days}-day export lag ",
+         "(through {format_date(expected_ga_end)})"),
+    passed = length(missing_ga_days) == 0,
+    details = if (length(missing_ga_days) == 0) {
+      glue("property_traffic runs through {format_date(latest_ga_day)}")
+    } else {
+      c(
+        glue("Expected property_traffic through ",
+             "{format_date(expected_ga_end)}, ",
+             "found through {format_date(latest_ga_day)}"),
+        glue("missing day(s): ",
+             "{glue_collapse(format_date(missing_ga_days), sep = ', ')}"),
+        # The nightly export lands at 07:00 ET. Run the workbook before that and
+        # the newest expected day genuinely is not there yet, which looks
+        # identical to a broken pipeline from here.
+        "if run before 07:00 ET, the newest day may not have landed yet; re-run"
+      )
     }
   )
 
