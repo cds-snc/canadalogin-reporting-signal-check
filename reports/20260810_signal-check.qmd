@@ -443,3 +443,5 @@ asked most often was simply **`r cc_top$call_topic`**
 {{< include _footer.qmd >}}
 
 {{< include _analytics.qmd >}}
+
+{{< include _render-info.qmd >}}

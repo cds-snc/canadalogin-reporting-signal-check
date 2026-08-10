@@ -1,0 +1,60 @@
+```{r render-info}
+#| echo: false
+#| message: false
+#| warning: false
+
+# Provenance for the bottom of every report: which source produced this HTML,
+# when, and from where. Emitted as an HTML comment, so it is invisible on the
+# page and readable only in view-source. Note that "invisible" is not "private":
+# the values are still served in full to anyone who opens the file.
+#
+# Shared and unfrozen, like _footer.qmd and _analytics.qmd, because it describes
+# the render rather than the analysis. Every value is read at render time.
+render_info <- local({
+  # Returns the command's stdout, or character(0) if git is missing, this is
+  # not a repository, or the command fails.
+  git_out <- function(...) {
+    out <- suppressWarnings(
+      try(system2("git", c(...), stdout = TRUE, stderr = FALSE), silent = TRUE)
+    )
+    if (inherits(out, "try-error") || !is.null(attr(out, "status"))) {
+      character(0)
+    } else {
+      out
+    }
+  }
+  first <- function(x, fallback = "unknown") if (length(x)) x[1] else fallback
+
+  # A double hyphen anywhere inside an HTML comment ends it early and spills the
+  # rest onto the page. Branch names may legally contain one, so collapse runs.
+  safe <- function(x) gsub("-{2,}", "-", x)
+
+  commit <- first(git_out("rev-parse", "--short", "HEAD"))
+  # A bare hash misrepresents a render made from an edited working tree, so
+  # say so rather than implying the output matches the commit. Quarto writes a
+  # transient .rmarkdown beside the .qmd while rendering, so that must be
+  # gitignored or this reads as changed on every render, including clean ones.
+  if (commit != "unknown" && length(git_out("status", "--porcelain"))) {
+    commit <- paste0(commit, "-changed")
+  }
+
+  branch <- first(git_out("rev-parse", "--abbrev-ref", "HEAD"))
+  # A detached HEAD reports as "HEAD", which reads as a branch name but is not.
+  if (branch == "HEAD") branch <- "detached"
+
+  list(
+    commit = safe(commit),
+    branch = safe(branch),
+    rendered = safe(format(Sys.time(), "%Y-%m-%d %H:%M %Z")),
+    host = safe(first(Sys.info()[["nodename"]]))
+  )
+})
+```
+
+<!--
+CanadaLogin Signal Check - render provenance
+  rendered:    `r render_info$rendered`
+  commit:      `r render_info$commit`
+  branch:      `r render_info$branch`
+  workstation: `r render_info$host`
+-->
