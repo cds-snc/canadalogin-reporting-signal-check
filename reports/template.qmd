@@ -158,3 +158,5 @@ supplementary data the report did not graph above.
 {{< include _footer.qmd >}}
 
 {{< include _analytics.qmd >}}
+
+{{< include _render-info.qmd >}}
