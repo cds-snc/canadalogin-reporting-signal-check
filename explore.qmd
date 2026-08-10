@@ -268,6 +268,60 @@ auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
 expected_days <- seq(as.Date(launch_date), as.Date(period_end), by = "day")
 missing_days <- expected_days[!expected_days %in% auth_daily$day]
 zero_success_days <- auth_daily$day[auth_daily$successful_logins == 0]
+
+# A cumulative distinct count must never fall. Both ytd_unique_users and
+# rolling_365d_unique_users did in early August 2026, so this is a live check,
+# not a hypothetical one: the headline growth curve is drawn straight off
+# ytd_unique_users, and the apps-per-credential chunk takes a weekly max() of it,
+# so a regression shows up as a dip in one graph and is silently swallowed by the
+# other. Surface it here rather than letting either happen unnoticed.
+ytd_regressions <- auth_daily |>
+  arrange(day) |>
+  mutate(
+    prev_ytd = lag(ytd_unique_users),
+    drop = prev_ytd - ytd_unique_users
+  ) |>
+  filter(!is.na(drop), drop > 0) |>
+  select(day, prev_ytd, ytd_unique_users, drop)
+```
+
+The Google Analytics export runs on its own clock and its own deliberate two-day
+lag, so it is almost never current to the reporting period: a report written on
+the Monday after a period ending Sunday sees GA through Saturday at best. Resolve
+the GA window separately rather than assuming it matches, and read every GA
+figure below against `ga_period_end`, not `period_end`.
+
+```{r ga-period}
+ga_max_date <- tbl(con, in_schema("google_analytics", "property_traffic")) |>
+  summarise(m = max(date, na.rm = TRUE)) |>
+  pull(m) |>
+  as.Date()
+
+# GA never reaches past its own latest day, so the GA view of the period is
+# truncated rather than extrapolated. Every GA query below stops here.
+ga_period_end <- min(period_end, ga_max_date)
+ga_short_days <- as.integer(period_end - ga_period_end)
+
+# Integrity check from the catalog: screenpageviews is the one metric that is
+# summable across page_traffic and must equal the property_traffic total for the
+# same day. sessions and activeusers deliberately do not reconcile this way (GA4
+# de-duplicates each within its own dimension combination), so they are not
+# checked here.
+ga_views_check <- tbl(con, in_schema("google_analytics", "property_traffic")) |>
+  transmute(day = as.Date(date), property_views = as.double(screenpageviews)) |>
+  inner_join(
+    tbl(con, in_schema("google_analytics", "page_traffic")) |>
+      group_by(date) |>
+      summarise(page_views = sum(as.double(screenpageviews), na.rm = TRUE),
+                .groups = "drop") |>
+      transmute(day = as.Date(date), page_views),
+    by = "day"
+  ) |>
+  collect() |>
+  mutate(diff = property_views - page_views) |>
+  arrange(desc(day))
+
+ga_views_mismatches <- ga_views_check |> filter(diff != 0)
 ```
 
 ```{r health-strip}
@@ -296,6 +350,26 @@ status_strip(
     "Zero sign-in days",
     length(zero_success_days),
     if (length(zero_success_days) > 0) bad else ok
+  ),
+  status_card(
+    "YTD count regressions",
+    nrow(ytd_regressions),
+    if (nrow(ytd_regressions) > 0) bad else ok
+  ),
+  status_card("GA latest day", format(ga_max_date, "%a %b %d")),
+  status_card(
+    "GA short of period",
+    if (ga_short_days > 0) paste(ga_short_days, "days") else "None",
+    if (ga_short_days > 0) bad else ok
+  ),
+  status_card(
+    "GA page-view integrity",
+    if (nrow(ga_views_mismatches) > 0) {
+      paste(nrow(ga_views_mismatches), "days off")
+    } else {
+      "Reconciles"
+    },
+    if (nrow(ga_views_mismatches) > 0) bad else ok
   )
 )
 ```
@@ -323,6 +397,50 @@ dash_table(
   height = 150,
   columns = list(
     zero_success_day = colDef(name = "Zero successful sign-ins", align = "left")
+  )
+)
+```
+:::
+:::
+:::
+
+Any row below is a day on which the cumulative year-to-date distinct-user count
+came in lower than the day before, which cannot happen if the count is what it
+claims to be. An empty table is the expected result; rows here mean the headline
+growth curve has a dip that is an upstream artefact, not a loss of users.
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-6}
+```{r tbl-ytd-regressions}
+#| echo: false
+dash_table(
+  ytd_regressions,
+  height = 200,
+  columns = list(
+    day = colDef(name = "Day", align = "left"),
+    prev_ytd = colDef(name = "Previous YTD",
+                      format = colFormat(separators = TRUE)),
+    ytd_unique_users = colDef(name = "YTD",
+                              format = colFormat(separators = TRUE)),
+    drop = colDef(name = "Drop", format = colFormat(separators = TRUE))
+  )
+)
+```
+:::
+::: {.g-col-6}
+```{r tbl-ga-integrity}
+#| echo: false
+dash_table(
+  head(ga_views_check, 30),
+  height = 200,
+  columns = list(
+    day = colDef(name = "Day", align = "left"),
+    property_views = colDef(name = "property_traffic",
+                            format = colFormat(separators = TRUE)),
+    page_views = colDef(name = "sum(page_traffic)",
+                        format = colFormat(separators = TRUE)),
+    diff = colDef(name = "Diff", format = colFormat(separators = TRUE))
   )
 )
 ```
@@ -1501,6 +1619,706 @@ dash_table(
 :::
 :::
 :::
+
+# Google Analytics {#sec-ga}
+
+New this cycle: the `google_analytics` schema, six tables written by three
+nightly Lambdas. Everything here is bounded by `ga_period_end`, not
+`period_end`, because of the export's deliberate two-day lag.
+
+Two conventions carry through every funnel query below, both from the catalog:
+`breakdown_value = 'RESERVED_TOTAL'` is GA4's grand total across all relying
+parties (not a relying party), and `window_incomplete` rows are windows trimmed
+to a funnel's validity bounds, so they are excluded from every trend. The
+partition keys are strings, so `window_days` is filtered as `"7"`, never `7`.
+
+## Property-wide traffic
+
+The collection canary. Because it carries no dimension beyond the day, a
+collapse here means GA stopped collecting, rather than one page's tag breaking.
+
+```{r ga-property-data}
+ga_property <- tbl(con, in_schema("google_analytics", "property_traffic")) |>
+  filter(as.Date(date) <= as.Date(ga_period_end)) |>
+  transmute(
+    day = as.Date(date),
+    sessions = as.double(sessions),
+    active_users = as.double(activeusers),
+    new_users = as.double(newusers),
+    page_views = as.double(screenpageviews)
+  ) |>
+  collect() |>
+  arrange(day) |>
+  mutate(
+    views_per_session = page_views / sessions,
+    # New users over active users. In a healthy property this sits well below 1:
+    # most days are a mix of returning and new visitors. At or above 1 it is not
+    # a growth signal at all, it means GA4 is handing out a fresh client ID to
+    # nearly every visitor and cannot recognise anyone as returning. That is the
+    # same cookie churn that limits the coverage measured further down this
+    # section, which is why it is plotted rather than left in a table.
+    new_user_share = new_users / active_users
+  )
+
+# The property predates CanadaLogin's own launch, so anchor the series at the
+# launch week like every other graph here rather than showing a year of
+# pre-launch traffic that no report will ever reference.
+ga_property_since_launch <- ga_property |>
+  filter(day >= as.Date(launch_week_start))
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ga-property}
+#| fig-alt: |
+#|   Line chart of daily Google Analytics sessions, active users and page views
+#|   for the CanadaLogin property since the April 2026 launch. Page views swing
+#|   hard between weekdays and weekends while active users stay comparatively
+#|   flat, showing a large weekday-insensitive baseline.
+ga_property_since_launch |>
+  select(day, Sessions = sessions, `Active users` = active_users,
+         `Page views` = page_views) |>
+  pivot_longer(-day, names_to = "metric", values_to = "value") |>
+  ggplot(aes(day, value, color = metric)) +
+  geom_line(linewidth = 0.6) +
+  scale_color_manual(
+    values = c(Sessions = unname(colors$brand["blue"]),
+               `Active users` = unname(colors$brand["orange"]),
+               `Page views` = unname(colors$brand["forest"]))
+  ) +
+  scale_y_continuous(limits = c(0, NA), labels = comma) +
+  scale_x_date(date_breaks = "2 weeks", date_labels = "%b %d") +
+  theme_dash() +
+  labs(x = NULL, y = NULL, color = NULL,
+       title = "Daily GA4 property traffic since launch",
+       subtitle = "Page views collapse on weekends; active users barely move")
+```
+:::
+::: {.g-col-5}
+```{r tbl-ga-property}
+#| echo: false
+dash_table(
+  ga_property_since_launch |> arrange(desc(day)),
+  columns = list(
+    day = colDef(name = "Day", align = "left"),
+    sessions = colDef(name = "Sessions", format = colFormat(separators = TRUE)),
+    active_users = colDef(name = "Active users",
+                          format = colFormat(separators = TRUE)),
+    new_users = colDef(name = "New users",
+                       format = colFormat(separators = TRUE)),
+    page_views = colDef(name = "Page views",
+                        format = colFormat(separators = TRUE)),
+    views_per_session = colDef(name = "Views/session",
+                               format = colFormat(digits = 2)),
+    new_user_share = colDef(name = "New/active",
+                            format = colFormat(percent = TRUE, digits = 0))
+  )
+)
+```
+:::
+:::
+:::
+
+### Identity churn: new users as a share of active users
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ga-new-share}
+#| fig-alt: |
+#|   Line chart of new users as a share of active users per day since launch,
+#|   with a dashed reference line at 100 percent. The series runs close to and
+#|   often above 100 percent, meaning Google Analytics counts almost every
+#|   visitor as new and cannot recognise returning visitors.
+ggplot(ga_property_since_launch, aes(day, new_user_share)) +
+  geom_hline(yintercept = 1, linetype = "dashed",
+             color = unname(colors$brand["red"])) +
+  geom_line(color = unname(colors$brand["blue"]), linewidth = 0.6) +
+  scale_y_continuous(labels = percent, limits = c(0, NA)) +
+  scale_x_date(date_breaks = "2 weeks", date_labels = "%b %d") +
+  theme_dash() +
+  labs(x = NULL, y = "New users / active users",
+       title = "GA4 identity churn since launch",
+       subtitle = "At or above the dashed line, nearly every visitor looks new")
+```
+:::
+::: {.g-col-5}
+```{r tbl-ga-new-share}
+#| echo: false
+dash_table(
+  ga_property_since_launch |>
+    mutate(week_end = monday_of(day) + 6) |>
+    group_by(week_end) |>
+    summarise(
+      sessions = sum(sessions),
+      page_views = sum(page_views),
+      mean_new_share = mean(new_user_share),
+      mean_views_per_session = mean(views_per_session),
+      .groups = "drop"
+    ) |>
+    arrange(desc(week_end)),
+  columns = list(
+    week_end = colDef(name = "Week ending", align = "left"),
+    sessions = colDef(name = "Sessions", format = colFormat(separators = TRUE)),
+    page_views = colDef(name = "Page views",
+                        format = colFormat(separators = TRUE)),
+    mean_new_share = colDef(name = "Mean new/active",
+                            format = colFormat(percent = TRUE, digits = 0)),
+    mean_views_per_session = colDef(name = "Mean views/session",
+                                    format = colFormat(digits = 2))
+  )
+)
+```
+:::
+:::
+:::
+
+Sessions and page views are summable across days; active users and new users are
+not, so the weekly table sums the first two and averages the ratios rather than
+adding up user counts.
+
+## Top pages this period
+
+Keyed on path and title together, deliberately. Neither alone is a usable key
+here: the catalog warns that a retitled page starts a fresh row, but CanadaLogin
+has the opposite problem too, because the IBM Verify-hosted screens serve several
+distinct steps from one path. `/combined_login_selection.html` alone carries
+"Enter your email", "Enter your password" and "Initiate MFA verification", so
+grouping by path collapses three funnel steps into one row.
+
+```{r ga-pages-data}
+ga_pages <- tbl(con, in_schema("google_analytics", "page_traffic")) |>
+  filter(as.Date(date) >= as.Date(period_start),
+         as.Date(date) <= as.Date(ga_period_end)) |>
+  group_by(pagepath, pagetitle) |>
+  summarise(
+    page_views = sum(as.double(screenpageviews), na.rm = TRUE),
+    sessions = sum(as.double(sessions), na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  collect() |>
+  mutate(views_per_session = page_views / sessions) |>
+  arrange(desc(page_views))
+
+# Views per session above 1 on a form step means people are landing on that step
+# more than once in a visit: a retry, a validation error, a back-button. The
+# funnel's pass/fail step counts cannot see this, which is the whole reason the
+# catalog calls it out as a friction signal.
+ga_pages_friction <- ga_pages |>
+  filter(sessions >= 200) |>
+  arrange(desc(views_per_session))
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ga-pages}
+#| fig-height: 5.4
+#| fig-alt: |
+#|   Horizontal bar chart of the fifteen most viewed pages over the reporting
+#|   period, labelled by page title and bar-labelled with page views. The
+#|   combined sign-in selection page dominates the rest.
+ga_pages |>
+  slice_head(n = 15) |>
+  mutate(label = str_wrap(paste0(pagetitle, "  (", pagepath, ")"), 46)) |>
+  ggplot(aes(page_views, reorder(label, page_views))) +
+  geom_col(fill = unname(colors$brand["blue"])) +
+  geom_text(aes(label = comma(page_views)), hjust = -0.1, size = 2.7) +
+  scale_x_continuous(limits = c(0, NA), labels = comma,
+                     expand = expansion(c(0, 0.18))) +
+  theme_cds() + # nolint: object_usage_linter.
+  theme(plot.title.position = "plot") +
+  labs(x = "Page views", y = NULL,
+       title = "Most viewed pages this period",
+       subtitle = "Path and title together; one path can serve several steps")
+```
+:::
+::: {.g-col-5}
+```{r tbl-ga-pages}
+#| echo: false
+dash_table(
+  ga_pages_friction |>
+    select(pagetitle, pagepath, sessions, page_views, views_per_session),
+  columns = list(
+    pagetitle = colDef(name = "Title", align = "left", minWidth = 200),
+    pagepath = colDef(name = "Path", align = "left", minWidth = 160),
+    sessions = colDef(name = "Sessions", format = colFormat(separators = TRUE)),
+    page_views = colDef(name = "Views", format = colFormat(separators = TRUE)),
+    views_per_session = colDef(name = "Views/session",
+                               format = colFormat(digits = 2))
+  )
+)
+```
+:::
+:::
+:::
+
+The table is sorted by views per session, not volume, and restricted to pages
+with at least 200 sessions so a page seen twice by one person does not top the
+list. Read the top rows as candidate friction points.
+
+## Funnel shape: where people drop out
+
+```{r ga-funnel-steps-data}
+# The most recent 7-day window GA has landed that does not reach past the
+# reporting period. Resolved from the data rather than assumed, because the
+# export lag means the period's own end date often has no window at all.
+ga_funnel_window_end <- tbl(con, in_schema("google_analytics", "funnels_current")) |>
+  filter(window_days == "7", as.Date(window_end) <= as.Date(ga_period_end)) |>
+  summarise(m = max(window_end, na.rm = TRUE)) |>
+  pull(m) |>
+  as.Date()
+
+ga_window_label <- format(ga_funnel_window_end, "%b %d")
+
+ga_funnel_steps <- tbl(con, in_schema("google_analytics", "funnels_current")) |>
+  filter(
+    window_days == "7",
+    breakdown_value == "RESERVED_TOTAL",
+    !window_incomplete,
+    as.Date(window_end) == as.Date(ga_funnel_window_end)
+  ) |>
+  transmute(
+    funnel_id,
+    step_number = as.integer(funnelstepnumber),
+    step_name = funnelstepname,
+    users = as.double(activeusers),
+    stored_completion_rate = as.double(funnelstepcompletionrate),
+    abandonments = as.double(funnelstepabandonments),
+    window_start = as.Date(window_start),
+    window_end = as.Date(window_end)
+  ) |>
+  collect() |>
+  arrange(funnel_id, step_number) |>
+  group_by(funnel_id) |>
+  mutate(
+    # Recomputed from the step counts rather than read from
+    # funnelstepcompletionrate. The stored column is the NEXT step's users over
+    # this step's, not "this step's users over the previous step's" as the
+    # catalog describes it: for the sign-in funnel the value sitting on
+    # enter_email is enter_password / enter_email. Both are kept in the table
+    # beside this so the discrepancy stays visible rather than being smoothed
+    # over here.
+    step_over_step = users / lag(users),
+    from_entry = users / first(users)
+  ) |>
+  ungroup()
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ga-funnel-steps}
+#| fig-height: 5
+#| fig-alt: |
+#|   Horizontal bar chart of the sign-in and sign-up funnels, one panel each,
+#|   showing active users at every step in order with each bar labelled by its
+#|   user count and its share of the funnel's entry step. Both funnels taper
+#|   gradually rather than dropping at any single step.
+ga_funnel_steps |>
+  mutate(
+    step_label = paste0(step_number, ". ", step_name),
+    facet = ifelse(funnel_id == "sign_in", "Sign in", "Sign up")
+  ) |>
+  ggplot(aes(users, reorder(step_label, -step_number), fill = facet)) +
+  geom_col() +
+  geom_text(aes(label = paste0(comma(users), "  (", percent(from_entry, 1), ")")),
+            hjust = -0.08, size = 2.7) +
+  facet_wrap(~facet, ncol = 1, scales = "free_y") +
+  scale_fill_manual(values = c(`Sign in` = unname(colors$brand["blue"]),
+                               `Sign up` = unname(colors$brand["orange"])),
+                    guide = "none") +
+  scale_x_continuous(limits = c(0, NA), labels = comma,
+                     expand = expansion(c(0, 0.25))) +
+  theme_cds() + # nolint: object_usage_linter.
+  theme(plot.title.position = "plot") +
+  labs(x = "Active users reaching the step", y = NULL,
+       title = glue("Funnel steps, 7 days ending {ga_window_label}"),
+       subtitle = "Percentage is share of the funnel's own entry step")
+```
+:::
+::: {.g-col-5}
+```{r tbl-ga-funnel-steps}
+#| echo: false
+dash_table(
+  ga_funnel_steps |>
+    select(funnel_id, step_number, step_name, users, abandonments,
+           step_over_step, stored_completion_rate, from_entry),
+  columns = list(
+    funnel_id = colDef(name = "Funnel", align = "left"),
+    step_number = colDef(name = "#", maxWidth = 45),
+    step_name = colDef(name = "Step", align = "left", minWidth = 130),
+    users = colDef(name = "Users", format = colFormat(separators = TRUE)),
+    abandonments = colDef(name = "Abandoned",
+                          format = colFormat(separators = TRUE)),
+    step_over_step = colDef(name = "This/previous",
+                            format = colFormat(percent = TRUE, digits = 1)),
+    stored_completion_rate = colDef(name = "Stored rate",
+                                    format = colFormat(percent = TRUE, digits = 1)),
+    from_entry = colDef(name = "Share of entry",
+                        format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+Compare the "This/previous" and "Stored rate" columns row by row. They are offset
+by one step, because `funnelstepcompletionrate` holds the next step's users over
+this step's. The catalog currently describes it the other way round.
+
+## Task success rate
+
+Straight from `funnel_metrics_current`, no ratio computed by hand. The two
+funnels are not comparable to each other: sign-up's exit is a real confirmation
+page, while sign-in's exit is reaching MFA selection, the last thing GA can see
+before the redirect to IBM Verify. Sign-in therefore reads low by construction,
+and the gap between the two lines is not a gap in real performance.
+
+```{r ga-task-success-data}
+ga_task_success <- tbl(con, in_schema("google_analytics", "funnel_metrics_current")) |>
+  filter(
+    metric_id == "task_success",
+    window_days == "7",
+    breakdown_value == "RESERVED_TOTAL",
+    !window_incomplete,
+    as.Date(window_end) <= as.Date(ga_period_end)
+  ) |>
+  transmute(
+    funnel_id,
+    window_end = as.Date(window_end),
+    task_success_rate = as.double(value)
+  ) |>
+  collect() |>
+  arrange(funnel_id, window_end) |>
+  # A null value means nobody entered the funnel that window, an undefined rate
+  # rather than a zero. Dropping the rows keeps a gap in the line; treating them
+  # as 0 would drag the series down with a rate that was never measured.
+  filter(!is.na(task_success_rate)) |>
+  mutate(funnel = ifelse(funnel_id == "sign_in", "Sign in", "Sign up"))
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ga-task-success}
+#| fig-alt: |
+#|   Line chart of the rolling seven-day task success rate for the sign-in and
+#|   sign-up funnels. Sign-up runs near 88 percent and sign-in near 78 percent,
+#|   both roughly flat over the period covered.
+ggplot(ga_task_success, aes(window_end, task_success_rate, color = funnel)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 1.4) +
+  scale_color_manual(values = c(`Sign in` = unname(colors$brand["blue"]),
+                                `Sign up` = unname(colors$brand["orange"]))) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+  theme_dash() +
+  labs(x = NULL, y = "Task success rate", color = NULL,
+       title = "Rolling 7-day task success rate",
+       subtitle = "Sign-in stops at MFA selection, so it is not a completion rate")
+```
+:::
+::: {.g-col-5}
+```{r tbl-ga-task-success}
+#| echo: false
+dash_table(
+  ga_task_success |>
+    select(window_end, funnel, task_success_rate) |>
+    pivot_wider(names_from = funnel, values_from = task_success_rate) |>
+    arrange(desc(window_end)),
+  columns = list(
+    window_end = colDef(name = "Window ending", align = "left"),
+    `Sign in` = colDef(format = colFormat(percent = TRUE, digits = 1)),
+    `Sign up` = colDef(format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+### By relying party
+
+```{r ga-task-success-rp-data}
+# Two values in breakdown_value are not relying parties and not RESERVED_TOTAL:
+# an empty string and "(not set)", both GA4 failing to attribute a session to an
+# RP. They carry real users, so they are counted and shown rather than dropped
+# silently, but they are kept out of the per-party chart.
+ga_metrics_tbl <- tbl(con, in_schema("google_analytics", "funnel_metrics_current"))
+
+ga_task_success_rp_all <- ga_metrics_tbl |>
+  filter(
+    metric_id == "task_success",
+    window_days == "7",
+    breakdown_value != "RESERVED_TOTAL",
+    !window_incomplete,
+    as.Date(window_end) == as.Date(ga_funnel_window_end)
+  ) |>
+  transmute(
+    funnel_id,
+    relying_party = breakdown_value,
+    task_success_rate = as.double(value)
+  ) |>
+  collect() |>
+  mutate(
+    funnel = ifelse(funnel_id == "sign_in", "Sign in", "Sign up"),
+    attributed = !relying_party %in% c("", "(not set)")
+  )
+
+ga_task_success_rp <- ga_task_success_rp_all |>
+  filter(attributed, !is.na(task_success_rate))
+
+ga_unattributed <- ga_task_success_rp_all |> filter(!attributed)
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ga-task-success-rp}
+#| fig-height: 5
+#| fig-alt: |
+#|   Grouped horizontal bar chart of task success rate by relying party for the
+#|   latest seven-day window, one bar per party per funnel, each labelled with
+#|   its rate. Rates cluster tightly across parties rather than singling any one
+#|   out.
+ggplot(ga_task_success_rp,
+       aes(task_success_rate, reorder(relying_party, task_success_rate),
+           fill = funnel)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  geom_text(aes(label = percent(task_success_rate, 1)),
+            position = position_dodge(width = 0.8), hjust = -0.12, size = 2.6) +
+  scale_fill_manual(values = c(`Sign in` = unname(colors$brand["blue"]),
+                               `Sign up` = unname(colors$brand["orange"]))) +
+  scale_x_continuous(labels = percent, limits = c(0, NA),
+                     expand = expansion(c(0, 0.2))) +
+  theme_cds() + # nolint: object_usage_linter.
+  theme(legend.position = "bottom", plot.title.position = "plot") +
+  labs(x = "Task success rate", y = NULL, fill = NULL,
+       title = glue("Task success by relying party, ",
+                    "7 days ending {ga_window_label}"),
+       subtitle = "Unattributed breakdown values excluded; see the table")
+```
+:::
+::: {.g-col-5}
+```{r tbl-ga-task-success-rp}
+#| echo: false
+dash_table(
+  ga_task_success_rp_all |>
+    select(funnel, relying_party, attributed, task_success_rate) |>
+    arrange(funnel, desc(task_success_rate)),
+  columns = list(
+    funnel = colDef(name = "Funnel", align = "left"),
+    relying_party = colDef(name = "Relying party", align = "left",
+                           minWidth = 170),
+    attributed = colDef(name = "Attributed", maxWidth = 90),
+    task_success_rate = colDef(name = "Task success",
+                               format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+## How much of the real userbase does Google Analytics actually see? {#sec-ga-coverage}
+
+The question this section exists to answer. Google Analytics only counts a
+visitor whose browser runs the tag and accepts the cookie, so some share of real
+users is invisible to it. IBM Verify counts authentications server-side and does
+not care about cookies, so it is the closest thing available to ground truth.
+Putting a matched pair of numbers side by side estimates what GA is missing.
+
+The pair has to be chosen carefully. Property-wide GA active users are useless
+for this: the property carries a large baseline of shallow, weekday-insensitive
+traffic that never touches a sign-in, so its ratio to Verify users swings between
+roughly 4x and 28x depending on the day of the week. The sign-in funnel's entry
+step is the right comparator, because reaching "enter your email" and
+authenticating are close to the same population on the same day.
+
+```{r ga-coverage-data}
+ga_signin_daily <- tbl(con, in_schema("google_analytics", "funnels_current")) |>
+  filter(
+    funnel_id == "sign_in",
+    window_days == "1",
+    breakdown_value == "RESERVED_TOTAL",
+    !window_incomplete,
+    funnelstepname %in% c("enter_email", "mfa"),
+    as.Date(window_end) <= as.Date(ga_period_end)
+  ) |>
+  transmute(
+    day = as.Date(window_end),
+    step_name = funnelstepname,
+    ga_users = as.double(activeusers)
+  ) |>
+  collect() |>
+  pivot_wider(names_from = step_name, values_from = ga_users,
+              names_prefix = "ga_")
+
+ga_coverage <- ga_signin_daily |>
+  inner_join(
+    auth_daily |> select(day, verify_users = unique_users),
+    by = "day"
+  ) |>
+  mutate(
+    coverage = ga_enter_email / verify_users,
+    weekend = weekdays(day) %in% c("Saturday", "Sunday"),
+    day_type = ifelse(weekend, "Weekend", "Weekday")
+  ) |>
+  arrange(day)
+
+# Pooled over weekdays only. Weekend days carry so few users that a single
+# person moves the ratio several points, and they are visibly noisier below.
+# This is a ratio of two day-level counts summed over days, an exposure-weighted
+# rate, not a count of distinct users: neither numerator nor denominator is a
+# valid unique-user total over the span and neither is reported as one.
+ga_coverage_weekday <- ga_coverage |> filter(!weekend)
+coverage_pooled <- sum(ga_coverage_weekday$ga_enter_email) /
+  sum(ga_coverage_weekday$verify_users)
+coverage_sd <- sd(ga_coverage_weekday$coverage)
+```
+
+```{r ga-coverage-cards}
+#| echo: false
+status_strip(
+  status_card("Weekday GA coverage (pooled)", percent(coverage_pooled, 0.1)),
+  status_card("Implied blind spot", percent(1 - coverage_pooled, 0.1),
+              unname(colors$brand["orange"])),
+  status_card("Day-to-day spread (sd)", percent(coverage_sd, 0.1)),
+  status_card("Days compared", nrow(ga_coverage))
+)
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ga-coverage-levels}
+#| fig-alt: |
+#|   Line chart comparing daily users who reached the sign-in email step in
+#|   Google Analytics against daily unique users recorded by IBM Verify. The two
+#|   series track each other closely, with the Google Analytics line
+#|   consistently below the IBM Verify line.
+ga_coverage |>
+  select(day, `IBM Verify unique users` = verify_users,
+         `GA sign-in entry step` = ga_enter_email) |>
+  pivot_longer(-day, names_to = "source", values_to = "users") |>
+  ggplot(aes(day, users, color = source)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 1.3) +
+  scale_color_manual(
+    values = c(`IBM Verify unique users` = unname(colors$brand["blue"]),
+               `GA sign-in entry step` = unname(colors$brand["orange"]))
+  ) +
+  scale_y_continuous(limits = c(0, NA), labels = comma) +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+  theme_dash() +
+  labs(x = NULL, y = "Users", color = NULL,
+       title = "What GA sees against what IBM Verify records",
+       subtitle = "Same population, two instruments; the gap is what GA misses")
+```
+:::
+::: {.g-col-5}
+```{r tbl-ga-coverage}
+#| echo: false
+dash_table(
+  ga_coverage |>
+    select(day, day_type, ga_enter_email, ga_mfa, verify_users, coverage) |>
+    arrange(desc(day)),
+  columns = list(
+    day = colDef(name = "Day", align = "left"),
+    day_type = colDef(name = "Type", align = "left", maxWidth = 90),
+    ga_enter_email = colDef(name = "GA entry",
+                            format = colFormat(separators = TRUE)),
+    ga_mfa = colDef(name = "GA MFA step",
+                    format = colFormat(separators = TRUE)),
+    verify_users = colDef(name = "Verify users",
+                          format = colFormat(separators = TRUE)),
+    coverage = colDef(name = "Coverage",
+                      format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-ga-coverage-ratio}
+#| fig-alt: |
+#|   Scatter and line chart of daily Google Analytics coverage, the share of IBM
+#|   Verify users that Google Analytics also counted, with weekdays and weekends
+#|   distinguished and a dashed line at the pooled weekday average of about 83
+#|   percent. Weekdays sit in a tight band; weekends scatter far wider.
+ggplot(ga_coverage, aes(day, coverage)) +
+  geom_hline(yintercept = coverage_pooled, linetype = "dashed",
+             color = unname(colors$brand["red"])) +
+  geom_line(color = unname(colors$greyscale[3]), linewidth = 0.4) +
+  geom_point(aes(color = day_type), size = 2.2) +
+  scale_color_manual(values = c(Weekday = unname(colors$brand["blue"]),
+                                Weekend = unname(colors$brand["orange"]))) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+  theme_dash() +
+  labs(x = NULL, y = "GA coverage of Verify users", color = NULL,
+       title = "Daily Google Analytics coverage",
+       subtitle = glue("Dashed line is the pooled weekday rate, ",
+                       "{percent(coverage_pooled, 0.1)}"))
+```
+:::
+::: {.g-col-5}
+```{r tbl-ga-coverage-summary}
+#| echo: false
+dash_table(
+  ga_coverage |>
+    group_by(day_type) |>
+    summarise(
+      days = n(),
+      pooled = sum(ga_enter_email) / sum(verify_users),
+      mean_coverage = mean(coverage),
+      min_coverage = min(coverage),
+      max_coverage = max(coverage),
+      .groups = "drop"
+    ),
+  height = 150,
+  columns = list(
+    day_type = colDef(name = "Day type", align = "left"),
+    days = colDef(name = "Days", maxWidth = 70),
+    pooled = colDef(name = "Pooled",
+                    format = colFormat(percent = TRUE, digits = 1)),
+    mean_coverage = colDef(name = "Mean",
+                           format = colFormat(percent = TRUE, digits = 1)),
+    min_coverage = colDef(name = "Min",
+                          format = colFormat(percent = TRUE, digits = 1)),
+    max_coverage = colDef(name = "Max",
+                          format = colFormat(percent = TRUE, digits = 1))
+  )
+)
+```
+:::
+:::
+:::
+
+Read this as an estimate with a known direction of error, not a measurement.
+Two things push the ratio up and one pushes it down, and they do not cancel:
+
+- Some people reach the email step and never authenticate (wrong account, gave
+  up, bounced). GA counts them, Verify does not, which inflates coverage.
+- Some authentications never render the email step at all, such as a session
+  resumed inside its lifetime. Verify counts them, GA does not, which deflates
+  coverage.
+- GA active users are browsers, not people. One person on a phone and a laptop
+  is two GA users but one Verify user, which inflates coverage.
+
+The first and third are the larger effects, so the true share of users GA can see
+is more likely below the headline figure than above it. Treat it as an upper
+bound on coverage, and therefore a lower bound on the blind spot. What it is
+genuinely good for is the correction factor: when a GA-only number needs to be
+talked about as if it described all users, this is roughly how much of the real
+population it stands for.
 
 # Call centre {#sec-calls}
 
