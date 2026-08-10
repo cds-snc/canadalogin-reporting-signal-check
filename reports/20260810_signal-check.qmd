@@ -166,7 +166,6 @@ signup_steps <- tbl(con, in_schema("google_analytics", "funnels_current")) |>
   ) |>
   transmute(
     window_end = as.Date(window_end),
-    window_start = as.Date(window_start),
     step = funnelstepname,
     users = as.double(activeusers)
   ) |>
@@ -255,10 +254,9 @@ format_long_date <- function(d) {
 
 Welcome back to the **CanadaLogin Signal Check**, our every-second-week read on
 CanadaLogin metrics. A steady two weeks for the service, plus something new
-behind the scenes: Google Analytics data now lands in our reporting infrastructure, a
-task the D&R team has been working on for several months. It helps us monitor the
-service and catch problems in our own data sooner. We close on what it cannot
-see. If you missed
+behind the scenes: Google Analytics data now lands in our reporting
+infrastructure, a task the D&R team has been working on for several months. We
+close on what it still cannot see. If you missed
 the [last Signal Check](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/yfS8vlhQ/20260727_signal-check.html?utm_source=report_link),
 it is a two-minute read.
 
@@ -307,9 +305,9 @@ add_cds_logo(add_watermark(ytd_plot, date = report_date,
 ```
 
 **User traffic and task success data are now automatic.** Analytics data
-has been available pretty much since launch, but only by hand, through the
-Google Analytics interface. Staying on top of it was an arduous process. Now
-the sign-up and sign-in flows land in our warehouse nightly, with more to come.
+has been available since shortly after launch, but only by hand, through the
+Google Analytics interface, which made keeping up with it slow work. Now the
+sign-up and sign-in flows land in our warehouse nightly, with more to come.
 In the two weeks to **`r format_long_date(ga_period_end)`**,
 **`r comma(signup_started)`** people started the sign-up form and
 **`r comma(signup_finished)`** reached the confirmation screen,
@@ -362,10 +360,10 @@ signup_plot <- ggplot(mapping = aes(window_end, task_success_rate)) +
   scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
   theme_cds() +
   labs(
-    x = NULL, y = "Completed sign-up", color = NULL,
-    title = "Nine in ten people who begin the sign-up form finish it",
+    x = NULL, y = "Sign Up Task Success", color = NULL,
+    title = "Nine in ten people who begin the sign-up flow finish it",
     subtitle = paste(
-      "Share of people starting the sign-up form who reach the",
+      "Share of people starting the sign-up flow who reach the",
       "confirmation screen"
     )
   )
@@ -376,15 +374,12 @@ add_cds_logo(add_watermark(signup_plot, date = report_date,
 
 **Google Analytics does not see everyone.** GA only counts users whose browser
 runs its tag and accepts a cookie, and many people block that, through a
-corporate VPN or built-in ad blocking. IBM Verify records accounts on our own
-servers and does not depend on any of that, so it counts users reliably but in
-less detail. New accounts are the fairest thing to compare, because every
-completed sign-up renders one confirmation screen and creates one new user.
-Across July, Google
-Analytics saw about **`r percent(coverage_pooled, accuracy = 1)`** of them, so
-roughly **one in five** new users never appears in it. It is still the only place
-we can watch someone move through a flow, but every user number in this report
-comes from IBM Verify.
+corporate VPN or built-in ad blocking. IBM Verify records accounts independently and 
+does not depend on any of that, so it counts users reliably but in less detail. New 
+accounts are the fairest thing to compare, because every completed sign-up renders one 
+confirmation screen and creates one new user. Across July, Google Analytics saw about 
+**`r percent(coverage_pooled, accuracy = 1)`** of them, so roughly **one in five** new 
+users never appears in it. Every user number in this report comes from IBM Verify.
 
 ```{r coverage-graph}
 #| fig-height: 4.2
@@ -432,8 +427,12 @@ add_cds_logo(add_watermark(coverage_plot, date = report_date,
 
 To summarize:
 
-* **IBM Verify**: Accurate, but only cumulative counts and daily totals. It cannot see the steps in a flow. Good for reporting the number of users, but not for understanding how they got there.
-* **Google Analytics**: Detailed, can see the steps in a flow, but misses about one in five users. Good for a typical user's behavior, but not for reporting counts of things.
+* **IBM Verify**: Accurate, but only cumulative counts and daily totals. It
+  cannot see the steps in a flow. Good for reporting how many users there are,
+  not for understanding how they got there.
+* **Google Analytics**: Detailed, and the only place we can watch someone move
+  through a flow, but it misses about one in five users. Good for how a typical
+  user behaves, not for counting.
 
 The call centre handled **`r period_calls`** calls over the two most recent
 reported weeks, which end a little before this period does. The question people
