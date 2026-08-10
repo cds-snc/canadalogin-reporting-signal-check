@@ -360,7 +360,7 @@ signup_plot <- ggplot(mapping = aes(window_end, task_success_rate)) +
   scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
   theme_cds() +
   labs(
-    x = NULL, y = "Sign Up Task Success", color = NULL,
+    x = NULL, y = "Sign-up task success", color = NULL,
     title = "Nine in ten people who begin the sign-up flow finish it",
     subtitle = paste(
       "Share of people starting the sign-up flow who reach the",
@@ -374,12 +374,13 @@ add_cds_logo(add_watermark(signup_plot, date = report_date,
 
 **Google Analytics does not see everyone.** GA only counts users whose browser
 runs its tag and accepts a cookie, and many people block that, through a
-corporate VPN or built-in ad blocking. IBM Verify records accounts independently and 
-does not depend on any of that, so it counts users reliably but in less detail. New 
-accounts are the fairest thing to compare, because every completed sign-up renders one 
-confirmation screen and creates one new user. Across July, Google Analytics saw about 
-**`r percent(coverage_pooled, accuracy = 1)`** of them, so roughly **one in five** new 
-users never appears in it. Every user number in this report comes from IBM Verify.
+corporate VPN or built-in ad blocking. IBM Verify records accounts independently
+of the browser, so it counts users reliably but in less detail. New accounts are
+the fairest thing to compare, because every completed sign-up renders one
+confirmation screen and creates one new user. Across July, Google Analytics saw
+about **`r percent(coverage_pooled, accuracy = 1)`** of them, so roughly **one in
+five** new users never appears in it. Every user number in this report comes from
+IBM Verify.
 
 ```{r coverage-graph}
 #| fig-height: 4.2
