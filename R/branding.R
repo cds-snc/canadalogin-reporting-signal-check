@@ -1,22 +1,15 @@
 #' CDS/SNC logo branding for ggplot graphs.
 #'
-#' add_cds_logo() overlays the CDS/SNC logo in the top-right corner of a plot
-#' using cowplot::draw_image, which preserves the logo's aspect ratio
-#' automatically. The result is a cowplot drawing that knitr renders (and
-#' embed-resources base64-inlines) like any other figure - no external image
-#' file ends up referenced by the HTML.
+#' add_cds_logo() draws the logo with cowplot::draw_image, which preserves its
+#' aspect ratio. The result is a cowplot drawing knitr renders like any other
+#' figure, so the HTML ends up referencing no external image file.
 #'
-#' Top-right is chosen as a letterhead position: ggplot titles are left-aligned,
-#' so the band above the panel on the right is empty and the logo never collides
-#' with the data or the axes.
+#' Top-right by default: ggplot titles are left-aligned, so that band is empty
+#' and the logo never collides with the data or axes.
 #'
-#' The logo is the bilingual CDS/SNC mark; cds_logo_path() randomly returns the
-#' English-first or French-first variant on each call, by design - so different
-#' graphs in a report may show different languages, and a re-render may flip
-#' them. This is cosmetic only and does not affect any data in the report.
-#'
-#' By default the plain CDS/SNC square is used; set canada_wordmark = TRUE for the
-#' square + Canada wordmark lockup.
+#' cds_logo_path() picks the English- or French-first mark at random each call,
+#' by design. Graphs may differ within a report and flip on re-render; this is
+#' cosmetic and affects no data.
 
 suppressPackageStartupMessages({
   library(cowplot)
@@ -24,10 +17,8 @@ suppressPackageStartupMessages({
   library(showtext)
 })
 
-# Randomly pick the English-first or French-first logo on each call, so graphs
-# within a report may differ in language by design. Searches upward so it
-# resolves from the project root or the reports/ subfolder. canada_wordmark picks
-# the square + Canada wordmark lockup; otherwise the plain CDS/SNC square.
+# Random EN/FR variant each call, by design (see above). Searches upward so it
+# resolves from the project root or from reports/.
 cds_logo_path <- function(canada_wordmark = FALSE) {
   variants <- if (canada_wordmark) {
     c("EN_Square+CANADA.jpg", "FR_Square+CANADA.jpg")
@@ -45,11 +36,9 @@ cds_logo_path <- function(canada_wordmark = FALSE) {
   )
 }
 
-# Overlay the logo flush in a corner. `position` is "top-right" (default),
-# "bottom-left", or "top-left". `height` is the logo height as a fraction of the
-# figure; width is generous so the height is what constrains the logo, keeping it
-# small and undistorted. `canada_wordmark` swaps the plain CDS/SNC square for the
-# square + Canada wordmark lockup.
+# Overlay the logo flush in a corner. `height` is a fraction of the figure;
+# width is deliberately generous so height is what constrains the logo, keeping
+# it small and undistorted.
 add_cds_logo <- function(
     plot,
     position = c(
@@ -86,8 +75,7 @@ add_cds_logo <- function(
     placements <- corners[position]
   }
 
-  # Add margin on the sides where the logo will sit so it lands in whitespace
-  # rather than overlapping the panel. The margin matches the logo height.
+  # Pad the sides the logo sits on so it lands in whitespace, not the panel.
   margin_pt <- grid::unit(height * 55, "pt")
   sides <- unique(sub("-.*", "", names(placements)))
   current_margin <- ggplot2::calc_element("plot.margin", plot$theme)
@@ -114,12 +102,9 @@ add_cds_logo <- function(
 
 # Watermark -------------------------------------------------------------------
 
-# Light watermark in the bottom-right corner with the report name and date.
-# `date` should be a string like "June 25, 2026" or a Date object (formatted
-# automatically). `edition` is the report's serial number; when supplied it is
-# appended to the report name (e.g. "CanadaLogin Signal Check #1 // ..."), and
-# omitted when NULL. Uses the brand font when available, grey40 at a small size
-# so it stays readable but unobtrusive.
+# Light bottom-right watermark with the report name and date. `date` takes a
+# Date or a preformatted string; `edition` appends "#N" when supplied. Small and
+# grey so it stays readable but unobtrusive.
 add_watermark <- function(plot, date = Sys.Date(), edition = NULL) {
   if (inherits(date, "Date")) date <- format(date, "%B %e, %Y")
   edition_tag <- if (!is.null(edition)) paste0(" #", edition) else ""
@@ -144,31 +129,41 @@ add_watermark <- function(plot, date = Sys.Date(), edition = NULL) {
 
 #' Brand typeface for ggplot graphs.
 #'
-#' theme_cds() applies the CDS/CanadaLogin brand font to a ggplot so graphs match
-#' the document typography set in reports/_brand.yml. It extends theme_bw() (the
-#' house graph style) and changes only the typeface, giving titles the brand's
-#' Semibold weight. The font is loaded from Google Fonts on first use via showtext
-#' and cached for the session; if it cannot be fetched (e.g. offline) graphs fall
-#' back to the default sans font rather than failing the render.
+#' theme_cds() extends theme_bw() with the brand font so graphs match the
+#' document typography in reports/_brand.yml, giving titles the Semibold weight.
+#' Loaded from the vendored files on first use and cached for the session; if
+#' they cannot be read, graphs fall back to the default sans rather than fail.
 
-# _brand.yml names the typeface "Source Sans Pro"; Google Fonts now serves the
-# identical v3 under "Source Sans 3", which is the name the Google Fonts API (and
-# therefore sysfonts) recognises. Same typeface, current name.
+# The brand guide calls this "Source Sans Pro"; "Source Sans 3" is the identical
+# current release, and the one name _brand.yml, the report CSS and graphs share.
 cds_font <- "Source Sans 3"
 
-# Load the brand font from Google once per session and enable showtext glyph
-# rendering, so the font works with knitr's default graphics device without any
-# per-report chunk options. Idempotent; safe offline (warns, returns FALSE). The
-# brand's Semibold (600) is mapped to the "bold" face, so the bold elements that
-# theme titles use render as Semibold rather than a heavier 700.
+# Vendored font files, searched upward like cds_logo_path(). TTF, not the WOFF2
+# the reports embed: sysfonts cannot read WOFF2, so fonts/ holds both formats.
+cds_font_dir <- function() {
+  for (dir in c("fonts", "../fonts")) {
+    if (file.exists(file.path(dir, "source-sans-3-400-normal.ttf"))) return(dir)
+  }
+  NULL
+}
+
+# Register once per session and turn on showtext, so the font works with knitr's
+# default device without per-report chunk options. Idempotent, needs no network.
+# Semibold (600) maps to the "bold" face, so bold theme text is not a heavier 700.
 register_cds_fonts <- function() {
   if (cds_font %in% sysfonts::font_families()) {
     showtext::showtext_auto()
     return(invisible(TRUE))
   }
+  font_dir <- cds_font_dir()
   ok <- tryCatch(
     {
-      sysfonts::font_add_google(cds_font, cds_font, regular.wt = 400, bold.wt = 600)
+      if (is.null(font_dir)) stop("font files not found", call. = FALSE)
+      sysfonts::font_add(
+        cds_font,
+        regular = file.path(font_dir, "source-sans-3-400-normal.ttf"),
+        bold = file.path(font_dir, "source-sans-3-600-normal.ttf")
+      )
       TRUE
     },
     error = function(e) {
@@ -189,8 +184,7 @@ register_cds_fonts <- function() {
   invisible(ok)
 }
 
-# theme_bw() in the brand typeface, with Semibold titles. Falls back to the
-# default sans font if the brand font could not be loaded.
+# theme_bw() in the brand typeface, with Semibold titles.
 theme_cds <- function(base_size = 11, base_family = cds_font) {
   if (!register_cds_fonts()) base_family <- ""
   theme_bw(base_size = base_size, base_family = base_family) +

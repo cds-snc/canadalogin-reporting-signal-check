@@ -9,7 +9,7 @@ params:
 format:
   html:
     embed-resources: true
-    theme: cosmo
+    theme: [cosmo, _fonts.scss]   # _fonts.scss: GC Design System fonts
     toc: false
     fig-width: 8
     fig-height: 3.4

@@ -1,0 +1,33 @@
+// Brand typeface, self-hosted. See notes/self-hosted-fonts.md.
+//
+// Quarto inlines these at render time, so a report needs no network for fonts
+// and stays self-contained. The faces are latin-subset WOFF2 (~16 KB each) and
+// live in the repo-root fonts/ folder, alongside the TTFs R/branding.R uses.
+
+/*-- scss:defaults --*/
+
+// Cosmo pulls Source Sans Pro from Google Fonts on its own (cosmo.scss:78),
+// independently of _brand.yml. Google serves TTF to non-browser clients, so
+// leaving this in place is what made reports 8 MB.
+$web-font-path: false;
+
+/*-- scss:rules --*/
+
+@each $weight in 400, 600, 700 {
+  @each $style in normal, italic {
+    @font-face {
+      font-family: "Source Sans 3";
+      src: url("../fonts/source-sans-3-#{$weight}-#{$style}.woff2") format("woff2");
+      font-weight: $weight;
+      font-style: $style;
+      font-display: swap;
+    }
+  }
+}
+
+// Quarto emits the brand family bare ("font-family:Source Sans 3"), so give it
+// a fallback for anyone the faces do not reach.
+body {
+  font-family: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, Arial, sans-serif;
+}
