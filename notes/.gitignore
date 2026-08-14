@@ -1,0 +1,5 @@
+# Whitelist-style ignore: notes are local by default, so committing one is an
+# explicit choice rather than the default. To track a file, add an exception:
+#   !runtime-google-fonts.md
+*
+!.gitignore

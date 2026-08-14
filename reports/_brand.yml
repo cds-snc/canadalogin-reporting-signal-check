@@ -57,20 +57,19 @@ color:
 
 typography:
   # The guide uses a single, open-source family: Source Sans Pro (Google/Adobe),
-  # most often in Light and Semibold. Now also published as "Source Sans 3".
+  # now published as "Source Sans 3". That is the name used throughout, so the
+  # CSS, _fonts.scss and R/branding.R all match.
   fonts:
-    # Weights used by document text: 400 body, 600 headings, 700 strong, plus
-    # italics for emphasis. Light (300) is dropped (base is 400, so nothing uses it)
-    - family: Source Sans Pro
-      source: google
-      weight: [400, 600, 700]
-      style: [normal, italic]
+    # Declared "system" so Quarto names the family without fetching it; the
+    # faces are self-hosted in fonts/ and inlined by _fonts.scss.
+    - family: Source Sans 3
+      source: system
   base:
-    family: Source Sans Pro
+    family: Source Sans 3
     weight: 400       # Regular - bumped from the guide's Light (300) for on-screen/WCAG legibility
     line-height: 1.5
   headings:
-    family: Source Sans Pro
+    family: Source Sans 3
     weight: 600       # Semibold - the guide's heading weight
   link:
     color: primary
