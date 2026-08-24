@@ -19,7 +19,7 @@
 required_packages <- c(
   "DBI", "RAthena", "dplyr", "dbplyr", "stringr", "tidyr", "lubridate",
   "ggplot2", "scales", "cowplot", "magick", "dotenv", "ggbrick",
-  "glue", "readr", "purrr"
+  "glue", "readr", "purrr", "gt"
 )
 
 check_packages <- function() {
