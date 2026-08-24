@@ -48,11 +48,18 @@ series_start <- as.Date("2026-04-20")
 first_week_end <- series_start + 6
 
 # Figure 1 projects August out to month end.
+month_start <- as.Date("2026-08-01")
 month_end <- as.Date("2026-08-31")
+prior_month_start <- as.Date("2026-07-01")
 
 # Figure 2 zooms on the days the cumulative count misbehaved.
 anomaly_start <- as.Date("2026-08-05")
 anomaly_end <- as.Date("2026-08-10")
+ytd_fall_days <- as.Date(c("2026-08-06", "2026-08-07"))
+ytd_mismatch_day <- as.Date("2026-08-09")
+
+iris_surge_days <- as.Date(c("2026-08-17", "2026-08-18"))
+iris_baseline_end <- period_start + 4
 
 # Call-centre weeks run Sun-Sat and lag, so they do not align to the period.
 call_window_start <- as.Date("2026-08-02")
@@ -92,20 +99,21 @@ mau_monthly <- auth_daily |>
   summarise(mau = last(mtd_unique_users), days_observed = n(), .groups = "drop")
 
 # April is a partial month: the service went live on the 22nd.
-april_days <- mau_monthly$days_observed[mau_monthly$month == as.Date("2026-04-01")]
-
-august_actual <- mau_monthly$mau[mau_monthly$month == as.Date("2026-08-01")]
+august_actual <- mau_monthly$mau[mau_monthly$month == month_start]
+july_actual <- mau_monthly$mau[mau_monthly$month == prior_month_start]
 
 # New users per day is the rise in the month-to-date count. That rate has a
 # hard weekday cycle, so remaining days take the same weekday's mean.
 august_new_by_weekday <- auth_daily |>
-  filter(day >= as.Date("2026-08-01"), day <= period_end) |>
+  filter(day >= month_start, day <= period_end) |>
   mutate(new_users = mtd_unique_users - lag(mtd_unique_users, default = 0)) |>
   filter(day >= period_start) |>
   group_by(weekday = format(day, "%a")) |>
   summarise(mean_new = mean(new_users), .groups = "drop")
 
-remaining_days <- data.frame(day = seq(period_end + 1, month_end, by = "day")) |>
+remaining_days <- data.frame(
+  day = seq(period_end + 1, month_end, by = "day")
+) |>
   mutate(weekday = format(day, "%a")) |>
   left_join(august_new_by_weekday, by = "weekday")
 
@@ -114,9 +122,8 @@ august_projected <- august_actual + sum(remaining_days$mean_new)
 mau_plot_data <- mau_monthly |>
   transmute(
     month,
-    label = format(month, "%B"),
     actual = mau,
-    projected = if_else(month == as.Date("2026-08-01"), august_projected, NA_real_)
+    projected = if_else(month == month_start, august_projected, NA_real_)
   )
 
 # Figure 2 --------------------------------------------------------------------
@@ -140,7 +147,7 @@ anomaly_table <- ytd_daily |>
     possible = if_else(impossible, "No", "Yes")
   )
 
-aug9 <- ytd_daily |> filter(day == as.Date("2026-08-09"))
+ytd_mismatch <- ytd_daily |> filter(day == ytd_mismatch_day)
 
 # The same invariant on the monthly count Figure 1 rests on.
 mtd_violations <- auth_daily |>
@@ -215,19 +222,18 @@ burst_scores <- launch_grid |>
 
 launch_profiles <- launch_grid |>
   group_by(service_name, launch_date) |>
-  summarise(
-    peak = max(new_users),
-    new_share = sum(new_users[age <= 13]) / sum(daily_users[age <= 13]),
-    .groups = "drop"
-  ) |>
+  summarise(peak = max(new_users), .groups = "drop") |>
   left_join(burst_scores[, c("service_name", "burst")], by = "service_name") |>
   arrange(desc(burst))
 
 # Panels run from sharpest burst to flattest. MyCGC is unscored.
-panel_order <- c("GC Digital Talent", "MyCGC",
-                 launch_profiles$service_name[
-                   !launch_profiles$service_name %in% c("GC Digital Talent", "MyCGC")
-                 ])
+leading_panels <- c("GC Digital Talent", "MyCGC")
+panel_order <- c(
+  leading_panels,
+  launch_profiles$service_name[
+    !launch_profiles$service_name %in% leading_panels
+  ]
+)
 launch_grid <- launch_grid |>
   mutate(service_name = factor(service_name, levels = panel_order))
 burst_scores <- burst_scores |>
@@ -237,7 +243,9 @@ burst_scores <- burst_scores |>
 scored_profiles <- launch_profiles |>
   filter(!is.na(burst), service_name != "GC Digital Talent")
 
-profile <- function(name) launch_profiles[launch_profiles$service_name == name, ]
+profile <- function(name) {
+  launch_profiles[launch_profiles$service_name == name, ]
+}
 gcdt <- profile("GC Digital Talent")
 mycgc <- profile("MyCGC")
 
@@ -259,11 +267,10 @@ mycgc_latest <- launch_grid |>
 
 # IRIS on August 17 and 18: the two days that carried the period's growth.
 iris_surge <- service_daily |>
-  filter(service_name == "IRIS",
-         day >= as.Date("2026-08-17"), day <= as.Date("2026-08-18"))
+  filter(service_name == "IRIS", day %in% iris_surge_days)
 iris_baseline <- service_daily |>
   filter(service_name == "IRIS",
-         day >= period_start, day <= as.Date("2026-08-14"),
+         day >= period_start, day <= iris_baseline_end,
          !format(day, "%a") %in% c("Sat", "Sun"))
 
 # Call centre -----------------------------------------------------------------
@@ -299,14 +306,16 @@ Check](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/pcVVBbOJ/
 it is a two-minute read.
 
 **August is unsurprisingly on track to be the busiest month since launch.**
-**`r comma(august_actual)`** users signed in between August 1 and
+**`r comma(august_actual)`** users signed in between
+**`r format_long_date(month_start)`** and
 **`r format_long_date(period_end)`**, and following the pattern of the past two
 weeks the month should close near **`r comma(round(august_projected, -2))`**,
-against
-**`r comma(mau_monthly$mau[mau_monthly$month == as.Date("2026-07-01")])`** in
+against **`r comma(july_actual)`** in
 July. Growth has come in steps rather than steadily. IRIS, the PrairiesCan and
-PacifiCan portal, drew **`r comma(iris_surge$daily_users[1])`** users on August
-17 and **`r comma(iris_surge$daily_users[2])`** on August 18 against a typical
+PacifiCan portal, drew **`r comma(iris_surge$daily_users[1])`** users on
+**`r format_long_date(iris_surge_days[1])`** and
+**`r comma(iris_surge$daily_users[2])`** on
+**`r format_long_date(iris_surge_days[2])`** against a typical
 **`r comma(round(mean(iris_baseline$daily_users)))`**, and roughly
 **`r comma(round(sum(iris_surge$new_users), -1))`** of those were signing in for
 the first time. That is new demand, not the existing userbase returning.
@@ -330,7 +339,10 @@ mau_plot <- ggplot(mau_plot_data, aes(month)) +
   ) +
   geom_text(
     data = subset(mau_plot_data, !is.na(projected)),
-    aes(y = projected, label = paste0(comma(round(projected, -2)), " projected")),
+    aes(
+      y = projected,
+      label = paste0(comma(round(projected, -2)), " projected")
+    ),
     vjust = -0.8, colour = colors$brand["blue"], fontface = "bold", size = 3.4
   ) +
   scale_y_continuous(
@@ -355,10 +367,12 @@ add_cds_logo(add_watermark(mau_plot, date = report_date,
 **Something is fishy with IBM Verify data.** We track a running count of
 everyone who has used CanadaLogin this year. Given that its a count of users
 over a year, and its been less than a year since launch, it should only climb.
-Because of that, we were surprised to see it fall on August 6 and again on
-August 7. Sign-ins and new users do not line up either: on
-**`r format_long_date(aug9$day)`** the count gained **`r comma(aug9$change)`**
-users on a day when only allegedly **`r comma(aug9$daily_users)`** signed in.
+Because of that, we were surprised to see it fall on
+**`r format_long_date(ytd_fall_days[1])`** and again on
+**`r format_long_date(ytd_fall_days[2])`**. Sign-ins and new users do not line
+up either: on **`r format_long_date(ytd_mismatch$day)`** the count gained
+**`r comma(ytd_mismatch$change)`** users on a day when only allegedly
+**`r comma(ytd_mismatch$daily_users)`** signed in.
 
 ```{r ytd-graph}
 #| fig-alt: |
@@ -434,13 +448,14 @@ CanadaLogin users ourselves (instead of relying on IBM Verify to provide this
 number) would need a permissions scope granting read access to every user's
 personal information, far more than reporting should ever have. That means that,
 right now, we cannot answer the very simple and reasonable question of "how many
-people use CanadaLogin". Instead, we must treat the year-to-date unique users provided 
-by IBM Verify as approximate. This is a work in progress, and we'll update you once we
-have a fix.
+people use CanadaLogin". Instead, we must treat the year-to-date unique users
+provided by IBM Verify as approximate. This is a work in progress, and we'll
+update you once we have a fix.
 
-**Enough services have launched that we can start to study their shape.** The figure 
-below shows the daily new users during each relying party's launch. GC Digital Talent 
-had the steepest climb: **`r comma(gcdt$peak)`** new users in a single day. MyCGC opened
+**Enough services have launched that we can start to study their shape.** The
+figure below shows the daily new users during each relying party's launch. GC
+Digital Talent had the steepest climb: **`r comma(gcdt$peak)`** new users in a
+single day. MyCGC opened
 on **`r format_long_date(mycgc$launch_date)`**, climbed to
 **`r comma(mycgc_peak_day$new_users)`**, and was back to
 **`r comma(mycgc_latest$new_users)`** within three working days. IRIS rose
@@ -463,7 +478,9 @@ live four weeks yet, so it is too early to score.
 #|   weeks, each on its own scale. GC Digital Talent spikes on one day, scoring
 #|   0.68 for burstiness; the others are flatter at 0.34 to 0.50.
 launch_plot <- ggplot(launch_grid, aes(age, new_users)) +
-  geom_line(aes(group = week), colour = colors$brand["blue"], linewidth = 0.9, alpha = 0.5) +
+  geom_line(
+    aes(group = week),
+    colour = colors$brand["sky"], linewidth = 0.9) +
   geom_point(colour = colors$brand["blue"], size = 1.1) +
   facet_wrap(~service_name, ncol = 3, scales = "free_y") +
   geom_text(
@@ -480,7 +497,7 @@ launch_plot <- ggplot(launch_grid, aes(age, new_users)) +
     x = "Days since the service launched", y = "New users per business day",
     title = "Some services open with a spike, others build gradually",
     subtitle = paste0(
-      "New users each weekday over each service's own first four weeks,\n",
+      "New users each weekday over each service's first four weeks,\n",
       "alongside a measure of how quickly new users arrive after launch."
     )
   )
@@ -499,8 +516,8 @@ CanadaLogin, and you can see that in the data:
 overwhelmingly new to CanadaLogin.
 
 That matters for planning, because first-time users are the ones who will
-eventually need their identity verified, and they may end up at a Service Canada Centre
-or a post office to complete that task. We must therefore be
+eventually need their identity verified, and they may end up at a Service
+Canada Centre or a post office to complete that task. We must therefore be
 conscious of how closely-packed first time arrivals are as CanadaLogin scales
 up. A big service transitioning to CanadaLogin will create a surge of first-time
 users, and if that surge is too concentrated (for example, if they email all of
