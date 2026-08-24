@@ -181,11 +181,8 @@ service_daily <- app_daily |>
   ) |>
   mutate(age = as.integer(day - launch_date))
 
-# One zero-filled weekday grid per service, used for both the chart and the
-# score so they measure the same thing. Four weeks is exactly 20 weekdays.
-# Weekdays are used because the weekend cycle swamps the shape over a window
-# this short. A weekday with no row is a day nobody new arrived, so it counts
-# as zero rather than being dropped; days that have not happened are dropped.
+# One zero-filled weekday grid per service, feeding both the chart and the
+# score. A weekday with no row is a day nobody new arrived, so it is a zero.
 launch_grid <- public_parties |>
   distinct(service_name, launch_date) |>
   crossing(age = 0:27) |>
@@ -196,14 +193,11 @@ launch_grid <- public_parties |>
     by = c("service_name", "day")
   ) |>
   mutate(across(c(new_users, daily_users), \(x) coalesce(x, 0)),
-         # Lines are grouped by calendar week so they break at weekends rather
-         # than drawing a segment from Friday straight to Monday.
+         # Grouped by calendar week so the chart lines break at weekends.
          week = monday_of(day))
 
-# Burstiness: the Gini coefficient of new users across those 20 weekdays, so 0
-# is arrivals spread evenly across the launch and 1 is all of them on one day.
-# Gini shifts with the length of the window, so a service that has not reached
-# 20 weekdays is not scored rather than scored on a shorter one.
+# Burstiness: Gini of new users across the 20 weekdays, from 0 (spread evenly)
+# to 1 (all on one day). Unscored below 20 weekdays, since Gini shifts with n.
 gini <- function(x) {
   x <- sort(x)
   n <- length(x)
@@ -229,7 +223,7 @@ launch_profiles <- launch_grid |>
   left_join(burst_scores[, c("service_name", "burst")], by = "service_name") |>
   arrange(desc(burst))
 
-# Panels run from sharpest burst to flattest. MyCGC has no ratio.
+# Panels run from sharpest burst to flattest. MyCGC is unscored.
 panel_order <- c("GC Digital Talent", "MyCGC",
                  launch_profiles$service_name[
                    !launch_profiles$service_name %in% c("GC Digital Talent", "MyCGC")
@@ -239,19 +233,13 @@ launch_grid <- launch_grid |>
 burst_scores <- burst_scores |>
   mutate(service_name = factor(service_name, levels = panel_order))
 
-# The two smallest services; their first-time shares are within noise.
-# Everything with a score except the outlier, for the range quoted in the text.
+# The scored services other than GC Digital Talent, for the range in the text.
 scored_profiles <- launch_profiles |>
   filter(!is.na(burst), service_name != "GC Digital Talent")
-
-smallest_profiles <- launch_profiles |>
-  filter(service_name %in% c("VAC Healthshare", "CED Client Space"))
 
 profile <- function(name) launch_profiles[launch_profiles$service_name == name, ]
 gcdt <- profile("GC Digital Talent")
 mycgc <- profile("MyCGC")
-iris_p <- profile("IRIS")
-ced <- profile("CED Client Space")
 
 # GC Digital Talent's production opening, with the day either side of it.
 gcdt_peak_day <- service_daily |>
@@ -446,8 +434,9 @@ CanadaLogin users ourselves (instead of relying on IBM Verify to provide this
 number) would need a permissions scope granting read access to every user's
 personal information, far more than reporting should ever have. That means that,
 right now, we cannot answer the very simple and reasonable question of "how many
-people use CanadaLogin". Instead, we must treat the year-to-date unique users as
-approximate. This is a work in progress, and we'll update you once we have a fix.
+people use CanadaLogin". Instead, we must treat the year-to-date unique users provided 
+by IBM Verify as approximate. This is a work in progress, and we'll update you once we
+have a fix.
 
 **Enough services have launched that we can start to study their shape.** The figure 
 below shows the daily new users during each relying party's launch. GC Digital Talent 
@@ -474,7 +463,7 @@ live four weeks yet, so it is too early to score.
 #|   weeks, each on its own scale. GC Digital Talent spikes on one day, scoring
 #|   0.68 for burstiness; the others are flatter at 0.34 to 0.50.
 launch_plot <- ggplot(launch_grid, aes(age, new_users)) +
-  geom_line(aes(group = week), colour = colors$brand["blue"], linewidth = 0.9) +
+  geom_line(aes(group = week), colour = colors$brand["blue"], linewidth = 0.9, alpha = 0.5) +
   geom_point(colour = colors$brand["blue"], size = 1.1) +
   facet_wrap(~service_name, ncol = 3, scales = "free_y") +
   geom_text(
@@ -491,7 +480,8 @@ launch_plot <- ggplot(launch_grid, aes(age, new_users)) +
     x = "Days since the service launched", y = "New users per business day",
     title = "Some services open with a spike, others build gradually",
     subtitle = paste0(
-      "New users each weekday over each service's own first four weeks, alongside a measure of their 'burstiness'. ",
+      "New users each weekday over each service's own first four weeks,\n",
+      "alongside a measure of how quickly new users arrive after launch."
     )
   )
 
