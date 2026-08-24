@@ -50,9 +50,9 @@ suppressPackageStartupMessages({
 
 con <- connect_athena()
 
-# Relying-party registry: application_name -> service name, operator, internal flag.
-relying_parties <- load_relying_parties() |>
-  mutate(launch_date = as.Date(launch_date))
+# Relying-party registry: application_name -> service name, operator, internal
+# flag. Read from the rp schema on Athena (rp.alias joined to rp.service).
+relying_parties <- load_relying_parties(con)
 internal_apps <- relying_parties$application_name[relying_parties$is_internal]
 
 # Palettes -------------------------------------------------------------------

@@ -50,7 +50,7 @@ ytd_series <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
 # internal-app flag. The internal exclusion below is also inlined as a frozen
 # literal list so this report's analytical result cannot change if the registry
 # is later reclassified; the registry is used for display labels and operator.
-relying_parties <- load_relying_parties()
+relying_parties <- load_relying_parties(con)
 internal_apps <- c(
   "Flow Application",
   "GCS Migration Solution",

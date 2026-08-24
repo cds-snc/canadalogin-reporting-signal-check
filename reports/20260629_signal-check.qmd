@@ -48,7 +48,7 @@ report_date <- as.Date("2026-06-29")
 # This list reflects the registry on 2026-06-29 and includes the GC Digital Talent
 # pilot (internal) and the migration simulator, so app-level views show only the
 # public GC Digital Talent production app, not the pilot.
-relying_parties <- load_relying_parties()
+relying_parties <- load_relying_parties(con)
 internal_apps <- c(
   "Flow Application",
   "GCS Migration Solution",

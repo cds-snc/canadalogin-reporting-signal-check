@@ -9,14 +9,14 @@
 #' Source R/connection.R first: this relies on monday_of() and launch_date, and
 #' reuses an already-open Athena connection passed in as `con` (it does not open
 #' its own). Keyed to `today`, so it is for the live workbook, never a frozen
-#' report render. Expects the tidyverse data verbs (dplyr/dbplyr/tidyr) and glue
-#' to be attached by the caller, as explore.qmd does.
+#' report render. It attaches the packages it needs, so sourcing this file
+#' alone is enough to run the gate.
 #'
 #' Checks:
-#'   1. Registry complete - every relying party in the data lake is in
-#'      relying_parties.csv with all fields filled. New parties are auto-appended
-#'      (launch_date inferred from first appearance, the rest left blank); the
-#'      run then fails until someone fills in the blanks.
+#'   1. Registry complete - every application_name in the data lake resolves
+#'      through rp.alias, and the service it resolves to has all fields filled.
+#'      Read-only: the registry comes from a hand-maintained sheet, so the run
+#'      fails with instructions to add the name there.
 #'   2. Reporting period complete - IBM Verify data runs through the most recent
 #'      complete Sunday, with no missing days in the two-week period.
 #'   3. Call centre current - allowing the feed's full-week lag, the Sun-Sat week
@@ -28,8 +28,19 @@
 #'      that it covers the reporting period; it never does by the time a report
 #'      is written, which is a caveat for the prose rather than a gate.
 
+# Packages -------------------------------------------------------------------
+
+# The gate is often sourced and run on its own, so it attaches what it needs.
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(tidyr)
+  library(glue)
+  library(purrr)
+  library(readr)
+})
+
 run_preflight_safety_check <- function(con,
-                                       csv_path = "data/relying_parties.csv",
                                        today = Sys.Date(),
                                        ga_export_lag_days = 2L) {
 
@@ -76,44 +87,31 @@ run_preflight_safety_check <- function(con,
 
   # Check 1 - relying-party registry is complete -------------------------------
 
-  relying_parties_registry <- readr::read_csv(
-    csv_path,
-    col_types = readr::cols(
-      .default = readr::col_character(),
-      is_internal = readr::col_logical()
-    )
-  )
+  # The registry comes from a hand-maintained sheet, so this check is
+  # read-only: it reports what is missing rather than filling it in.
+  registry <- load_relying_parties(con)
 
-  # The data lake's relying parties are the application_name values in
-  # app_login_counts, first appearance taken as an inferred launch date.
+  # An application_name that does not resolve through rp.alias would be
+  # dropped silently by an inner join, so surface it here.
   data_lake_parties <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
     group_by(application_name) |>
     summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
     collect() |>
     mutate(first_seen = as.Date(first_seen))
 
-  new_parties <- data_lake_parties |>
-    anti_join(relying_parties_registry, by = "application_name")
+  unresolved <- data_lake_parties |>
+    anti_join(registry, by = "application_name") |>
+    mutate(problem = glue(
+      "'{application_name}' is in app_login_counts (first seen ",
+      "{format_date(first_seen)}) but has no row in rp.alias - add it to the ",
+      "relying-parties sheet"
+    )) |>
+    pull(problem)
 
-  # Auto-append each newcomer as a blank registry row (launch_date inferred);
-  # the completeness check below then fails until a human fills the rest.
-  if (nrow(new_parties) > 0) {
-    new_registry_rows <- data.frame(
-      application_name = new_parties$application_name,
-      service_name = NA_character_,
-      operator = NA_character_,
-      is_internal = NA,
-      launch_date = format(new_parties$first_seen),
-      stringsAsFactors = FALSE
-    )
-    relying_parties_registry <- bind_rows(relying_parties_registry,
-                                          new_registry_rows)
-    readr::write_csv(relying_parties_registry, csv_path, na = "")
-  }
-
-  # One problem line per registry row that still has a blank required field.
+  # A service that an alias resolves to, but whose own fields are unfilled.
   required_fields <- c("service_name", "operator", "is_internal", "launch_date")
-  registry_problems <- relying_parties_registry |>
+  incomplete <- registry |>
+    filter(application_name %in% data_lake_parties$application_name) |>
     mutate(across(everything(), as.character)) |>
     pivot_longer(all_of(required_fields), names_to = "field",
                  values_to = "value") |>
@@ -121,21 +119,24 @@ run_preflight_safety_check <- function(con,
     group_by(application_name) |>
     summarise(blank_fields = glue_collapse(field, sep = ", "),
               .groups = "drop") |>
-    mutate(
-      newly_added = application_name %in% new_parties$application_name,
-      problem = glue(
-        "fill in [{blank_fields}] for '{application_name}'",
-        "{if_else(newly_added, ' (newly added; launch_date inferred)', '')}"
-      )
-    ) |>
+    mutate(problem = glue(
+      "fill in [{blank_fields}] for '{application_name}' in the ",
+      "relying-parties sheet"
+    )) |>
     pull(problem)
+
+  registry_problems <- c(unresolved, incomplete)
+
+  in_use <- registry |>
+    filter(application_name %in% data_lake_parties$application_name)
 
   record_check(
     1,
-    "Registry complete - every relying party is registered and filled in",
+    "Registry complete - every relying party resolves through rp.alias",
     passed = length(registry_problems) == 0,
     details = if (length(registry_problems) == 0) {
-      glue("{nrow(relying_parties_registry)} relying parties, all fields present")
+      glue("{nrow(in_use)} application names resolving to ",
+           "{dplyr::n_distinct(in_use$service_name)} services, all fields present")
     } else {
       registry_problems
     }
