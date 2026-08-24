@@ -458,7 +458,7 @@ on **`r format_long_date(mycgc$launch_date)`**, climbed to
 sharply in its first week and then settled. VAC Healthshare and CED Client Space
 barely rose at all.
 
-We can put a number on the *burstiness* of a launch with a Gini coefficient over
+We can put a number on the *burstiness* of a launch with a [Gini coefficient](https://en.wikipedia.org/wiki/Gini_coefficient#Calculation) over
 its first four weeks, where 0 means new users arrived evenly across the launch
 and 1 means they all arrived on a single day. GC Digital Talent is by far the
 burstiest at **`r number(gcdt$burst, accuracy = 0.01)`**, with the other three
