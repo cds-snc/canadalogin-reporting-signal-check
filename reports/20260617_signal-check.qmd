@@ -95,7 +95,7 @@ sessions_series <- succ_weekly |>
 # Relying-party registry: clean service names, operating department, internal
 # flag. The internal exclusion is inlined as a frozen literal list so this
 # report's analytical result cannot change if the registry is later reclassified.
-relying_parties <- load_relying_parties()
+relying_parties <- load_relying_parties(con)
 internal_apps <- c(
   "Flow Application",
   "GCS Migration Solution",
