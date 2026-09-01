@@ -4,3 +4,8 @@ project:
   # then into canadalogin-signal-check-publishing/reports. Assumes the two
   # repos sit side by side under the same parent directory.
   output-dir: ../../canadalogin-signal-check-publishing/reports
+
+# Keep reports out of search indices
+format:
+  html:
+    include-in-header: _noindex.html

@@ -11,6 +11,9 @@
 reports/*.html
 reports/out/
 *.html
+# ...except the head fragment that keeps the published reports out of search
+# indexes. It is source, not output.
+!reports/_noindex.html
 
 # R / RStudio
 .Rproj.user/
