@@ -239,6 +239,7 @@ dashboard](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/RyitY
 carries these metrics in more detail, and is refreshed every week on Monday.
 
 ```{r sso-by-service}
+#| fig-height: 5.1
 #| fig-alt: |
 #|   Stacked bar chart of SSO events each week by public service, from the
 #|   April 2026 launch to September 6. Total weekly volume climbs through the
@@ -264,15 +265,19 @@ sso_plot <- ggplot(weekly_sso, aes(week_end, sso_events, fill = service_name)) +
   guides(fill = guide_legend(nrow = 3)) +
   labs(
     x = NULL, y = "SSO events in the week",
-    title = "Two new services arrive and immediately take a large share",
+    title = "There are seven public services, but their usage is not equal",
     subtitle = paste0(
       "SSO events per week by public service, since the April 2026 launch ",
       "(internal applications excluded)"
     )
   )
 
-add_cds_logo(add_watermark(sso_plot, date = report_date,
-                           edition = params$edition))
+# Taller figure than the other two, so the logo height (a fraction of the
+# figure) is scaled down to keep it the same size on the page as theirs.
+add_cds_logo(
+  add_watermark(sso_plot, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 5.1
+)
 ```
 
 **Treasury Board's two ATIP services began using CanadaLogin on
@@ -314,7 +319,7 @@ new_users_plot <- ggplot(weekly_new_users, aes(week_end, new_users)) +
     title = "A service moving across brings its users with it",
     subtitle = paste0(
       "New CanadaLogin accounts each week, with the week the ATIP services ",
-      "moved in orange"
+      "launched in orange"
     )
   )
 
