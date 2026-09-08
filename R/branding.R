@@ -106,7 +106,14 @@ add_cds_logo <- function(
 # Date or a preformatted string; `edition` appends "#N" when supplied. Small and
 # grey so it stays readable but unobtrusive.
 add_watermark <- function(plot, date = Sys.Date(), edition = NULL) {
-  if (inherits(date, "Date")) date <- format(date, "%B %e, %Y")
+  # "%e" space-pads a single-digit day, leaving a double space mid-string that
+  # trimws() cannot reach.
+  if (inherits(date, "Date")) {
+    date <- paste0(
+      format(date, "%B "), as.integer(format(date, "%d")), ", ",
+      format(date, "%Y")
+    )
+  }
   edition_tag <- if (!is.null(edition)) paste0(" #", edition) else ""
   label <- paste0("CanadaLogin Signal Check", edition_tag, " // ", trimws(date))
   font_family <- if (register_cds_fonts()) cds_font else ""
