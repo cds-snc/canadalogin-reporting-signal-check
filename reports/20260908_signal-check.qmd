@@ -235,7 +235,7 @@ refers to the action of a human being. A user who signs in once in the morning a
 reaches three services over the day produces one sign-in and at least three SSO events.
 During the past two weeks there were **`r comma(period_sso_total)`** SSO events across 
 the seven public services. Our new [Sign-In Activity
-dashboard](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/REDACTED/ibm-verify.html?utm_source=report_link)
+dashboard](`r Sys.getenv("SIGNIN_DASHBOARD_URL")`)
 carries these metrics in more detail, and is refreshed every week on Monday.
 
 ```{r sso-by-service}
