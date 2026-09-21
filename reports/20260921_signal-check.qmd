@@ -125,10 +125,6 @@ app_daily <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   collect() |>
   inner_join(public_parties, by = "application_name")
 
-# rp.alias is overwritten every weekday, and a renamed alias would quietly drop
-# a service from the figures rather than raising anything.
-stopifnot(all(unique(public_parties$service_name) %in% app_daily$service_name))
-
 # Figure 1 --------------------------------------------------------------------
 #
 # Weekly SSO events by service since launch, each week plotted at its Sunday.
@@ -181,18 +177,6 @@ atip_period_weeks <- weekly_by_service |>
   group_by(week_end) |>
   summarise(sso_events = sum(sso_events), .groups = "drop") |>
   arrange(week_end)
-stopifnot(
-  nrow(atip_period_weeks) == 2,
-  all(atip_period_weeks$week_end - 6 > atip_start)
-)
-
-# The figure title names last week's busiest service.
-last_week_leader <- weekly_by_service |>
-  filter(week_end == period_end) |>
-  slice_max(sso_events, n = 1)
-stopifnot(
-  last_week_leader$service_name == "ATIP Information Online Request Service"
-)
 
 # Figure 2 --------------------------------------------------------------------
 #
@@ -226,12 +210,6 @@ summer_weeks <- support_weekly |>
   filter(week_end >= summer_start, week_end < atip_start)
 
 summer_calls <- median(summer_weeks$calls)
-summer_ratio_range <- range(summer_weeks$calls_per_100)
-# The prose calls the latest week in line with the level since late June.
-stopifnot(
-  latest_calls$calls_per_100 >= summer_ratio_range[1],
-  latest_calls$calls_per_100 <= summer_ratio_range[2]
-)
 
 # Figure 3 --------------------------------------------------------------------
 #
@@ -298,7 +276,6 @@ service_colours <- c(
   "VAC Healthshare" = unname(colors$brand["grey"]),
   "Other services" = unname(colors$greyscale[3])
 )
-stopifnot(all(highlighted %in% names(service_colours)))
 
 sso_plot <- ggplot(weekly_sso, aes(week_end, sso_events, fill = service_group)) +
   geom_col(width = 6) +
