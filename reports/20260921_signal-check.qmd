@@ -24,6 +24,7 @@ execute:
 source("../R/connection.R")
 source("../R/branding.R")
 source("../R/colours.R")
+source("../R/publishing.R")
 suppressPackageStartupMessages({
   library(dplyr)
   library(dbplyr)
@@ -33,11 +34,6 @@ suppressPackageStartupMessages({
 })
 
 con <- connect_athena()
-
-# The Support dashboard's published URL carries an unlisted token, so it lives
-# in .env, which connect_athena() loads.
-support_dashboard_url <- Sys.getenv("SUPPORT_DASHBOARD_URL")
-stopifnot(nzchar(support_dashboard_url))
 
 # Watermark date: the date this report is published.
 report_date <- as.Date("2026-09-21")
@@ -278,7 +274,7 @@ typical_entered_share <- sms_daily |>
 This is the **CanadaLogin Signal Check**, our read on CanadaLogin every two
 weeks. This time: the ATIP services, call centre demand, and a surge of
 suspicious SMS traffic. The [last Signal
-Check](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/REDACTED/20260908_signal-check.html?utm_source=report_link)
+Check](`r published_url("20260908_signal-check.html")`)
 is a two-minute read.
 
 **CanadaLogin now has about `r round(daily_users_multiple)` times as many
@@ -360,7 +356,7 @@ The call centre took **`r latest_calls$calls`** calls in the week ending
 daily active users, in line with the level it has held since late June.
 Because the ratio held while the userbase grew, it looks like a reliable
 signal rather than noise, which makes it useful for planning call centre
-capacity. The [Support dashboard](`r support_dashboard_url`) has week-by-week
+capacity. The [Support dashboard](`r published_url("support.html")`) has week-by-week
 detail on support calls, including the topics users call about.
 
 ```{r support-ratio}

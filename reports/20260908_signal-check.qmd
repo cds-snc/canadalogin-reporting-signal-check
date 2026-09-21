@@ -24,6 +24,7 @@ execute:
 source("../R/connection.R")
 source("../R/branding.R")
 source("../R/colours.R")
+source("../R/publishing.R")
 suppressPackageStartupMessages({
   library(dplyr)
   library(dbplyr)
@@ -223,7 +224,7 @@ if (is_preview) {
 Hello, it's **CanadaLogin Signal Check**, our every-second-week read on
 CanadaLogin metrics. This time: a new phrase for a thing we're already counting, the 
 arrival of TBS's two ATIP services and a quiet climb in passkey use. If you missed the 
-[last Signal Check](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/REDACTED/20260824_signal-check.html?utm_source=report_link),
+[last Signal Check](`r published_url("20260824_signal-check.html")`),
 it is a two-minute read.
 
 **A CanadaLogin session can be used to authenticate with more than one service.** When 
@@ -235,7 +236,7 @@ refers to the action of a human being. A user who signs in once in the morning a
 reaches three services over the day produces one sign-in and at least three SSO events.
 During the past two weeks there were **`r comma(period_sso_total)`** SSO events across 
 the seven public services. Our new [Sign-In Activity
-dashboard](`r Sys.getenv("SIGNIN_DASHBOARD_URL")`)
+dashboard](`r published_url("ibm-verify.html")`)
 carries these metrics in more detail, and is refreshed every week on Monday.
 
 ```{r sso-by-service}

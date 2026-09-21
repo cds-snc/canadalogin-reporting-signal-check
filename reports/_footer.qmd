@@ -3,8 +3,9 @@
 #| message: false
 #| warning: false
 
-# Load the .env so we can use the links in the footer
-# We store the links there because some of the links themselves contain secrets
+# Dashboard links come from published_url(); the archive links contain secrets
+# and live in .env.
+source("../R/publishing.R")
 for (footer_env_path in c(".env", "../.env", "../../.env")) {
   if (file.exists(footer_env_path)) {
     dotenv::load_dot_env(footer_env_path)
@@ -16,8 +17,8 @@ for (footer_env_path in c(".env", "../.env", "../../.env")) {
 ## Additional resources
 
 - **CanadaLogin dashboards**
-    - **Sign-In Activity dashboard** ([dashboard](`r Sys.getenv("SIGNIN_DASHBOARD_URL")`) | [code](https://github.com/cds-snc/canadalogin-reporting-dashboards/tree/main/dashboards/ibm-verify)) - covers users and sign-in events.
-    - **Support dashboard** ([dashboard](`r Sys.getenv("SUPPORT_DASHBOARD_URL")`) | [code](https://github.com/cds-snc/canadalogin-reporting-dashboards/tree/main/dashboards/support)) - covers call centre volume and partner support.
+    - **Sign-In Activity dashboard** ([dashboard](`r published_url("ibm-verify.html")`) | [code](https://github.com/cds-snc/canadalogin-reporting-dashboards/tree/main/dashboards/ibm-verify)) - covers users and sign-in events.
+    - **Support dashboard** ([dashboard](`r published_url("support.html")`) | [code](https://github.com/cds-snc/canadalogin-reporting-dashboards/tree/main/dashboards/support)) - covers call centre volume and partner support.
 - **CanadaLogin Metrics Cookbook** ([website](https://cds-snc.github.io/canadalogin-metrics-cookbook/) | [repo](https://github.com/cds-snc/canadalogin-metrics-cookbook)) - how each metric is defined and calculated, and what data is available.
 - **Signal Check report archive** ([CDS Google Drive](`r Sys.getenv("FOOTER_ARCHIVE_GDRIVE_URL")`) | [ESDC SharePoint](`r Sys.getenv("FOOTER_ARCHIVE_SHAREPOINT_URL")`)) - past editions of this report<a id="cat-trigger" href="#" title="">.</a>
 

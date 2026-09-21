@@ -29,6 +29,7 @@ execute:
 source("../R/connection.R")
 source("../R/branding.R")
 source("../R/colours.R")
+source("../R/publishing.R")
 suppressPackageStartupMessages({
   library(dplyr)
   library(dbplyr)
@@ -275,7 +276,7 @@ CanadaLogin metrics. This edition looks at the daily rhythm of the service,
 welcomes a new department, and introduces a measure we will be watching from
 here on: how much support demand all of this activity generates. If you missed
 the
-[last one](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/REDACTED/20260713_signal-check.html?utm_source=report_link),
+[last one](`r published_url("20260713_signal-check.html")`),
 it is a two-minute read. Feedback always welcome.
 
 **CanadaLogin crossed a milestone.** Cumulative unique users crossed 10,000 on

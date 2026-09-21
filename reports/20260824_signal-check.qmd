@@ -25,6 +25,7 @@ execute:
 source("../R/connection.R")
 source("../R/branding.R")
 source("../R/colours.R")
+source("../R/publishing.R")
 suppressPackageStartupMessages({
   library(dplyr)
   library(dbplyr)
@@ -302,7 +303,7 @@ CanadaLogin metrics. This time: August is on track to be our busiest month,
 there are issues with one of the most important IBM Verify metrics, and with
 five services live we can start to study what a "typical" launch looks like. If
 you missed the [last Signal
-Check](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/REDACTED/20260810_signal-check.html?utm_source=report_link),
+Check](`r published_url("20260810_signal-check.html")`),
 it is a two-minute read.
 
 **August is unsurprisingly on track to be the busiest month since launch.**
