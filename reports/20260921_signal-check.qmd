@@ -119,8 +119,7 @@ app_daily <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   transmute(
     day = as.Date(from_date),
     application_name,
-    sso_events = as.double(total_logins),
-    daily_users = as.double(unique_users)
+    sso_events = as.double(total_logins)
   ) |>
   collect() |>
   inner_join(public_parties, by = "application_name")
@@ -128,18 +127,6 @@ app_daily <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
 # rp.alias is overwritten every weekday, and a renamed alias would quietly drop
 # a service from the figures rather than raising anything.
 stopifnot(all(unique(public_parties$service_name) %in% app_daily$service_name))
-
-# Daily ATIP users, summed across the two services. A user of both on the same
-# day counts twice, so this is rounded and called approximate in the prose.
-atip_weekday_users <- app_daily |>
-  filter(
-    is_atip, day >= period_start,
-    as.integer(format(day, "%u")) <= 5L, day != labour_day
-  ) |>
-  group_by(day) |>
-  summarise(daily_users = sum(daily_users), .groups = "drop") |>
-  summarise(m = median(daily_users)) |>
-  pull(m)
 
 # Figure 1 --------------------------------------------------------------------
 #
@@ -171,13 +158,25 @@ weekly_sso <- weekly_by_service |>
     service_group, levels = c("Other services", rev(highlighted))
   ))
 
-# SSO events are summable, so a period total over 14 days is a daily average.
+# SSO events are summable, so the period total over its weeks is a weekly mean.
 period_sso <- sum(period_ranking$sso_events)
-period_daily_sso <- period_sso / as.integer(period_end - period_start + 1)
+period_weekly_sso <- period_sso /
+  (as.integer(period_end - period_start + 1) / 7)
 atip_sso_share <- app_daily |>
   filter(is_atip, day >= period_start, day <= period_end) |>
   summarise(n = sum(sso_events)) |>
   pull(n) / period_sso
+
+# ATIP's weeks inside the period; both are full weeks after its launch.
+atip_period_weeks <- weekly_by_service |>
+  filter(is_atip, week_end >= period_start, week_end <= period_end) |>
+  group_by(week_end) |>
+  summarise(sso_events = sum(sso_events), .groups = "drop") |>
+  arrange(week_end)
+stopifnot(
+  nrow(atip_period_weeks) == 2,
+  all(atip_period_weeks$week_end - 6 > atip_start)
+)
 
 # The figure title names last week's busiest service.
 last_week_leader <- weekly_by_service |>
@@ -222,10 +221,15 @@ summer_weeks <- support_weekly |>
 
 summer_calls <- median(summer_weeks$calls)
 summer_ratio_range <- range(summer_weeks$calls_per_100)
+# The prose calls the latest week in line with the level since late June.
+stopifnot(
+  latest_calls$calls_per_100 >= summer_ratio_range[1],
+  latest_calls$calls_per_100 <= summer_ratio_range[2]
+)
 
 # Figure 3 --------------------------------------------------------------------
 #
-# SMS OTP codes sent against codes used, per the catalog's mfa_activity
+# SMS OTP codes sent against codes entered correctly, per the catalog's mfa_activity
 # results: "sent" when a code goes out, "success" when one is entered correctly.
 sms_daily <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
   filter(
@@ -253,6 +257,22 @@ typical_sent <- sms_daily |>
   pull(m)
 
 attack_multiple <- attack_sent / typical_sent
+
+attack_success <- sms_daily |>
+  filter(day == attack_day) |>
+  pull(success)
+
+# Share of codes sent that were entered correctly. This is not the cookbook's
+# MFA success rate, which divides by success + failure and ignores sends.
+attack_entered_share <- attack_success / attack_sent
+
+typical_entered_share <- sms_daily |>
+  filter(
+    day >= period_start, as.integer(format(day, "%u")) <= 5L,
+    !day %in% c(labour_day, attack_day)
+  ) |>
+  summarise(m = median(success / sent)) |>
+  pull(m)
 ```
 
 This is the **CanadaLogin Signal Check**, our read on CanadaLogin every two
@@ -263,11 +283,13 @@ is a two-minute read.
 
 **CanadaLogin now has about `r round(daily_users_multiple)` times as many
 daily users as in August.** Over the past two weeks, public services handled
-about **`r comma(round(period_daily_sso, -2))`** SSO events a day, and
+about **`r comma(round(period_weekly_sso, -2))`** SSO events a week, and
 **`r percent(atip_sso_share, accuracy = 1)`** of them went to the two ATIP
 services. Unlike GC Digital Talent, which spiked at launch and then fell back,
-ATIP has held steady into its third week, at about
-`r comma(round(atip_weekday_users, -2))` users every weekday.
+ATIP has held steady into its third week, with
+`r comma(round(atip_period_weeks$sso_events[1], -2))` and
+`r comma(round(atip_period_weeks$sso_events[2], -2))` SSO events in its two
+full weeks.
 
 ```{r sso-by-service}
 #| fig-height: 4.4
@@ -330,17 +352,16 @@ add_cds_logo(
 )
 ```
 
-**Calls rose with the users, but calls per user held steady.** The call centre
-took **`r latest_calls$calls`** calls in the week ending
+**Calls rose with the users, but the ratio of calls to users held steady.**
+The call centre took **`r latest_calls$calls`** calls in the week ending
 `r format_long_date(call_window_end)`, up from about
 `r round(summer_calls)` a week over the summer. That is
 **`r number(latest_calls$calls_per_100, accuracy = 0.01)`** calls per 100
-daily active users, inside the
-`r number(summer_ratio_range[1], accuracy = 0.01)` to
-`r number(summer_ratio_range[2], accuracy = 0.01)` range it has held since late
-June. The top question was "What is CanadaLogin?", which fits a wave of new
-users. The [Support dashboard](`r support_dashboard_url`) has the week-by-week
-detail.
+daily active users, in line with the level it has held since late June.
+Because the ratio held while the userbase grew, it looks like a reliable
+signal rather than noise, which makes it useful for planning call centre
+capacity. The [Support dashboard](`r support_dashboard_url`) has week-by-week
+detail on support calls, including the topics users call about.
 
 ```{r support-ratio}
 #| fig-height: 4.8
@@ -416,16 +437,22 @@ add_cds_logo(
 **Suspicious traffic set off a surge of SMS codes on
 `r format_long_date(attack_day)`.** CanadaLogin sent
 **`r comma(attack_sent)`** SMS OTP codes that day, about
-**`r round(attack_multiple)`** times a typical weekday. Codes actually used
-rose only a little, which is the sign the traffic was not real users. Details
-are in the [incident channel](https://gcdigital.slack.com/archives/C0C2C6S8BS9).
+**`r round(attack_multiple)`** times a typical weekday. But only
+`r comma(attack_success)` codes were entered correctly, just
+`r percent(attack_entered_share, accuracy = 1)` of those sent, compared with
+about `r percent(typical_entered_share, accuracy = 1)` on a typical weekday. Most of the extra
+codes were never entered at all, which suggests the traffic was not real users.
+The team
+declared a SEV-1 incident at 3:56 a.m. Eastern and identified the issue by
+4:20 a.m. It has since been mitigated, and the details of the response are in
+the [incident channel](https://gcdigital.slack.com/archives/C0C2C6S8BS9).
 
 ```{r sms-surge}
 #| fig-alt: |
 #|   Bar chart of SMS OTP codes sent each day from August 10 to September 20,
-#|   with a line for codes used successfully. Daily sends stay in the low
+#|   with a line for codes entered correctly. Daily sends stay in the low
 #|   thousands until September 17, when a single red bar reaches about 39,000.
-#|   The line for codes used stays close to normal that day.
+#|   The line for codes entered correctly stays close to normal that day.
 sms_plot <- ggplot(sms_daily, aes(day)) +
   geom_col(aes(y = sent, fill = day == attack_day), width = 0.8) +
   geom_line(aes(y = success), colour = colors$brand["blue"], linewidth = 0.9) +
@@ -458,7 +485,7 @@ sms_plot <- ggplot(sms_daily, aes(day)) +
       "One day of suspicious traffic sent ", round(attack_multiple),
       " times the usual SMS codes"
     ),
-    subtitle = "SMS OTP codes sent each day (bars) and codes used (line)"
+    subtitle = "SMS OTP codes sent each day (bars) and codes entered correctly (line)"
   )
 
 add_cds_logo(add_watermark(sms_plot, date = report_date,
