@@ -27,6 +27,7 @@ execute:
 source("../R/connection.R")
 source("../R/branding.R")
 source("../R/colours.R")
+source("../R/publishing.R")
 suppressPackageStartupMessages({
   library(dplyr)
   library(dbplyr)
@@ -227,7 +228,7 @@ cc_dt <- call_topics |> filter(call_topic == "GC Digital Talent")
 Welcome back to the **CanadaLogin Signal Check**, our every-second-week read on
 how CanadaLogin is doing, written for an informed-but-not-technical audience and kept to about
 a page. This is only our second edition, so the shape of it may still shift; if
-you missed the [first one](https://cds-snc.github.io/canadalogin-signal-check-publishing/r/REDACTED/20260629_signal-check.html),
+you missed the [first one](`r published_url("20260629_signal-check.html", utm_source = NULL)`),
 it is worth a two-minute look. As always, let us know what is useful and what is not.
 
 **CanadaLogin is growing several times faster since Digital Talent went live.**
