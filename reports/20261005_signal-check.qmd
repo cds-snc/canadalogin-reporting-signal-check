@@ -233,9 +233,10 @@ phone_invalid_multiple <- error_daily |>
 ```
 
 This is the **CanadaLogin Signal Check**, our read on CanadaLogin every two
-weeks. This time: user growth, the FCAC Secure Portal, and errors. The [last
-Signal Check](`r published_url("20260921_signal-check.html")`) is a two-minute
-read.
+weeks. This edition covers three things. First, how far the user base grew,
+and how much of that growth may be bots. Second, how the FCAC Secure Portal,
+our newest partner, fared in its first two weeks. Third, what new error data
+tell us about the September sign-up spikes.
 
 **CanadaLogin users continue to climb, but the count may be inflated.** By
 `r format_long_date(stream_end)`, CanadaLogin had
@@ -461,6 +462,10 @@ add_cds_logo(
   height = 0.13 * 3.4 / 5
 )
 ```
+
+*Missed the previous edition? [Signal Check
+#`r params$edition - 1`](`r published_url("20260921_signal-check.html")`) is a
+two-minute read.*
 
 {{< include _footer_spooky.qmd >}}
 
