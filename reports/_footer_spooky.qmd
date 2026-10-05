@@ -76,7 +76,9 @@ _footer.qmd.
   <img src="../img/cat-pumpkin.png" alt="A graffiti drawing of a cat clinging to a ledge by its paws, in the style of the 'Hang in there' poster, wearing an orange jack-o'-lantern for a head and captioned 'hang in there boo'.">
 </div>
 
+<!-- Bat retired until next week
 <img id="spooky-bat" src="../img/spooky-bat.png" alt="" aria-hidden="true">
+-->
 
 <script>
 // The footer renders last, so move the bat up into the title block.

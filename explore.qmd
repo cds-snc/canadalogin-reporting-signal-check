@@ -189,7 +189,7 @@ theme_dash <- function() {
 
 # Data health {#sec-health}
 
-The preflight check halts the workbook if the data is not ready, so everything
+The preflight check halts the workbook if the data are not ready, so everything
 below reads complete data.
 
 ```{r preflight}
@@ -418,6 +418,102 @@ until the pipeline is fixed: IBM Verify computes both over a window longer than
 its 90 days of per-person data. Daily and month-to-date counts are unaffected.
 The YTD, rolling, adoption-curve, and applications-per-credential sections are
 for monitoring only.
+:::
+
+## Users since launch, two ways (preliminary event stream)
+
+Distinct users since launch from the preliminary `ibm_verify_events_raw`
+stream, counted on non-empty `subject` (pipeline PR #92). Unlike YTD, it holds
+no pre-launch test accounts. "Signed in" is everyone who authenticated;
+"Partner service" is users with a successful SSO event to a public service,
+which bots barely move. A widening gap between them flags bot sign-ups, as on
+2026-09-17, 24, 25 and 30.
+
+```{r users-two-ways-data}
+first_seen <- function(table, id) {
+  tbl(con, in_schema("ibm_verify_events_raw", table)) |>
+    rename(user = all_of(id)) |>
+    filter(!is.na(user), user != "")
+}
+
+signed_in_users <- first_seen("authentication_activity", "subject") |>
+  group_by(user) |>
+  summarise(first_day = min(substr(time, 1L, 10L)), .groups = "drop") |>
+  collect()
+
+public_apps <- relying_parties$application_name[!relying_parties$is_internal]
+partner_users <- first_seen("application_usage", "userid") |>
+  filter(result == "success", applicationname %in% !!public_apps) |>
+  group_by(user) |>
+  summarise(first_day = min(substr(time, 1L, 10L)), .groups = "drop") |>
+  collect()
+
+users_two_ways <- bind_rows(
+  `Signed in` = count(signed_in_users, first_day),
+  `Partner service` = count(partner_users, first_day),
+  .id = "measure"
+) |>
+  mutate(day = as.Date(first_day)) |>
+  filter(day <= period_end) |>
+  arrange(measure, day) |>
+  group_by(measure) |>
+  mutate(users = cumsum(n)) |>
+  ungroup()
+
+# New accounts per day and the share that reached a partner service: 80-95% on
+# a normal day, near zero on a bot day.
+new_account_cohorts <- signed_in_users |>
+  mutate(
+    day = as.Date(first_day),
+    used_service = user %in% partner_users$user
+  ) |>
+  filter(day >= period_start - 28, day <= period_end) |>
+  group_by(day) |>
+  summarise(
+    new_accounts = n(), reached_service = mean(used_service), .groups = "drop"
+  )
+```
+
+::: {.column-page}
+::: {.grid}
+::: {.g-col-7}
+```{r fig-users-two-ways}
+#| fig-alt: |
+#|   Line chart of distinct users since launch counted two ways, everyone who
+#|   signed in and users who reached a partner service, from the preliminary
+#|   event stream. The reporting period is shaded.
+ggplot(users_two_ways, aes(day, users, colour = measure)) +
+  annotate("rect", xmin = period_start, xmax = period_end,
+           ymin = -Inf, ymax = Inf, fill = colors$greyscale[5]) +
+  geom_line(linewidth = 0.9) +
+  scale_colour_manual(values = c(`Signed in` = unname(colors$brand["red"]),
+                                 `Partner service` = unname(colors$brand["blue"])),
+                      name = NULL) +
+  scale_y_continuous(labels = comma, limits = c(0, NA)) +
+  theme_dash() +
+  theme(legend.position = "bottom") +
+  labs(x = NULL, y = "Users since launch",
+       title = "Users since launch, two ways",
+       subtitle = glue("Preliminary event stream, through ",
+                       "{max(users_two_ways$day)}"))
+```
+:::
+::: {.g-col-5}
+```{r tbl-new-account-cohorts}
+#| echo: false
+dash_table(
+  new_account_cohorts,
+  columns = list(
+    day = colDef(name = "Day", align = "left"),
+    new_accounts = colDef(name = "New accounts",
+                          format = colFormat(separators = TRUE)),
+    reached_service = colDef(name = "Reached a service",
+                             format = colFormat(percent = TRUE, digits = 0))
+  )
+)
+```
+:::
+:::
 :::
 
 ## Daily active users
@@ -1757,8 +1853,8 @@ dash_table(
 
 # Google Analytics {#sec-ga}
 
-The `google_analytics` schema: six tables from three nightly Lambdas. Every
-query here is bounded by `ga_period_end`.
+The `google_analytics` schema, written nightly. Every query here is bounded by
+`ga_period_end`.
 
 Every funnel query keeps `breakdown_value = 'RESERVED_TOTAL'` (GA4's grand
 total, not a party) and drops `window_incomplete` rows. Partition keys are
@@ -2229,7 +2325,7 @@ dash_table(
 :::
 :::
 
-## How much of the real userbase does Google Analytics actually see? {#sec-ga-coverage}
+## How much of the userbase does Google Analytics see? {#sec-ga-coverage}
 
 GA only counts browsers that run the tag and accept the cookie. IBM Verify
 counts every authentication server-side, so a matched pair of numbers estimates
@@ -2441,57 +2537,31 @@ the correction factor for reading a GA-only number as if it covered everyone.
 
 ## Errors users see
 
-No ETL yet: this reads a manual GA4 export (Date, `error_id`, `error_message`,
-page title, page path; Active users; non-blank `error_id`). Replace the file
-each cycle and update `ga_errors_file`. IBM-side codes (`CSI...`) carry no
-message.
-
-Rows are daily users per code and page, so a sum across days is user-days.
-Several common errors send no tag (gadrift `notes/error-tagging-audit.md`), so
-this undercounts. A UI export can include a day GA has not finished processing.
+`google_analytics.error_events`: daily counts of the errors CanadaLogin tags in
+GA, by code, form and step. Group on `error_code`. Codes are ranked by events,
+which sum; `totalusers` does not. Non-production traffic is included, GA drops
+leading zeros (`26` is `026`), and several common errors send no tag, so this
+undercounts. Code meanings are in gadrift's `error-inventory-test.csv`.
 
 ```{r ga-errors-data}
-ga_errors_file <- "data/errors_last14.csv"
-
-# A six-line banner and a header, then a "Grand total" row with an extra field;
-# keep the first seven fields.
-ga_errors <- readr::read_csv(
-  ga_errors_file,
-  skip = 7, col_names = FALSE, show_col_types = FALSE,
-  col_types = readr::cols(.default = "c")
-) |>
-  suppressWarnings() |>
-  select(1:7) |>
-  setNames(c("date", "error_id", "error_message", "page_title", "page_path",
-             "views", "active_users")) |>
-  filter(!is.na(date), date != "") |>
-  mutate(
-    day = as.Date(date, "%Y%m%d"),
-    active_users = as.double(active_users),
-    error_message = na_if(error_message, "(not set)"),
-    # French messages arrive HTML-escaped ("associ&eacute;e").
-    error_message = vapply(
-      error_message,
-      function(m) {
-        if (is.na(m)) return(NA_character_)
-        xml2::xml_text(xml2::read_html(paste0("<p>", m, "</p>")))
-      },
-      character(1), USE.NAMES = FALSE
-    )
+ga_errors <- tbl(con, in_schema("google_analytics", "error_events")) |>
+  filter(
+    as.Date(date) >= as.Date(period_start),
+    as.Date(date) <= as.Date(ga_period_end)
   ) |>
-  filter(day <= ga_period_end)
+  collect() |>
+  mutate(day = as.Date(date), across(c(eventcount, totalusers), as.double))
 
 ga_errors_by_code <- ga_errors |>
-  group_by(error_id, page_path) |>
+  group_by(error_code, form_id) |>
   summarise(
-    user_days = sum(active_users),
+    events = sum(eventcount),
+    # The largest single row is a floor on users, not a total.
+    peak_day_users = max(totalusers),
     days_seen = n_distinct(day),
-    # English first where the same code carries both languages.
-    error_message = first(sort(error_message[!is.na(error_message)],
-                               decreasing = TRUE)),
     .groups = "drop"
   ) |>
-  arrange(desc(user_days))
+  arrange(desc(events))
 ```
 
 ::: {.column-page}
@@ -2501,21 +2571,20 @@ ga_errors_by_code <- ga_errors |>
 #| fig-height: 5
 #| fig-alt: |
 #|   Horizontal bar chart of the fifteen most common tagged errors over the GA
-#|   view of the period, one bar per error code and page, sized by user-days.
+#|   view of the period, one bar per error code and form, sized by events.
 ga_errors_by_code |>
-  slice_max(user_days, n = 15, with_ties = FALSE) |>
-  mutate(label = paste0(error_id, "  ", page_path)) |>
-  ggplot(aes(user_days, reorder(label, user_days))) +
+  slice_max(events, n = 15, with_ties = FALSE) |>
+  mutate(label = paste0(error_code, "  ", form_id)) |>
+  ggplot(aes(events, reorder(label, events))) +
   geom_col(fill = unname(colors$brand["blue"]), width = 0.7) +
-  geom_text(aes(label = comma(user_days)), hjust = -0.15, size = 3.1) +
+  geom_text(aes(label = comma(events)), hjust = -0.15, size = 3.1) +
   scale_x_continuous(labels = comma, limits = c(0, NA),
                      expand = expansion(mult = c(0, 0.12))) +
   theme_dash() +
   theme(axis.text.x = element_text(angle = 0, hjust = 0.5)) +
-  labs(x = "User-days", y = NULL,
+  labs(x = "Events", y = NULL,
        title = "Most common tagged errors",
-       subtitle = glue("GA, {min(ga_errors$day)} to {max(ga_errors$day)}; ",
-                       "daily active users summed across days"))
+       subtitle = glue("GA, {min(ga_errors$day)} to {max(ga_errors$day)}"))
 ```
 :::
 ::: {.g-col-5}
@@ -2525,11 +2594,12 @@ dash_table(
   ga_errors_by_code,
   height = 520,
   columns = list(
-    error_id = colDef(name = "Code", align = "left", minWidth = 90),
-    page_path = colDef(name = "Page", align = "left", minWidth = 110),
-    user_days = colDef(name = "User-days", format = colFormat(separators = TRUE)),
-    days_seen = colDef(name = "Days", minWidth = 55),
-    error_message = colDef(name = "Message", align = "left", minWidth = 220)
+    error_code = colDef(name = "Code", align = "left", minWidth = 110),
+    form_id = colDef(name = "Form", align = "left", minWidth = 130),
+    events = colDef(name = "Events", format = colFormat(separators = TRUE)),
+    peak_day_users = colDef(name = "Peak-day users",
+                            format = colFormat(separators = TRUE)),
+    days_seen = colDef(name = "Days", minWidth = 55)
   )
 )
 ```
@@ -2540,18 +2610,17 @@ dash_table(
 ### Passkey timeout in password recovery (CSIAH3315E)
 
 `CSIAH3315E` fires on `/validate-passkey`, the **password recovery** passkey
-step; sign-in passkeys use `/passwordless_fido2.html`. The base is that page's
-users from `page_traffic` (production stream), so both sides are GA daily users
-on the same page. A clean passkey recovery emits no error (gadrift
-`recover_password` baseline).
+step (sign-in passkeys use `/passwordless_fido2.html`). It means the passkey
+prompt was dismissed or timed out, and many users then retry, so the share is
+not a failure rate; keep it out of reports. The base is that page's users across
+all streams, matching the unfiltered error export.
 
 ```{r ga-passkey-timeout-data}
 recovery_passkey_users <- tbl(con, in_schema("google_analytics", "page_traffic")) |>
   filter(
     as.Date(date) >= as.Date(period_start),
     as.Date(date) <= as.Date(ga_period_end),
-    pagepath == "/validate-passkey",
-    streamname == "Canada Login Authentication"
+    pagepath == "/validate-passkey"
   ) |>
   group_by(date) |>
   summarise(page_users = sum(as.double(activeusers), na.rm = TRUE),
@@ -2560,9 +2629,9 @@ recovery_passkey_users <- tbl(con, in_schema("google_analytics", "page_traffic")
   transmute(day = as.Date(date), page_users)
 
 passkey_timeout <- ga_errors |>
-  filter(error_id == "CSIAH3315E", page_path == "/validate-passkey") |>
+  filter(error_code == "CSIAH3315E", form_id == "passwordrecovery") |>
   group_by(day) |>
-  summarise(timeout_users = sum(active_users), .groups = "drop") |>
+  summarise(timeout_users = sum(totalusers), .groups = "drop") |>
   inner_join(recovery_passkey_users, by = "day") |>
   mutate(timeout_share = timeout_users / page_users) |>
   arrange(day)
