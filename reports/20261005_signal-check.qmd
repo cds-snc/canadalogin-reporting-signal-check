@@ -1,0 +1,469 @@
+---
+title: "CanadaLogin Signal Check"
+subtitle: "For the two-week period of September 21 to October 4"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-10-05"
+params:
+  edition: 8
+  ga_page_title: "CanadaLogin Signal Check #8"
+format:
+  html:
+    embed-resources: true
+    theme: [cosmo, _fonts.scss]   # _fonts.scss: GC Design System fonts
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries are frozen to the September 21 - October 4, 2026 period.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+source("../R/publishing.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Watermark date: the date this report is published.
+report_date <- as.Date("2026-10-05")
+
+period_start <- as.Date("2026-09-21")
+period_end <- as.Date("2026-10-04")
+
+# Google Analytics is exported on a two-day lag, so its view ends a day early.
+ga_period_end <- as.Date("2026-10-03")
+
+# Monday of the launch week; the service went live Apr 22.
+series_start <- as.Date("2026-04-20")
+
+# Suspected bot sign-ups created accounts in bulk on these days.
+attack_days <- as.Date(c("2026-09-17", "2026-09-24", "2026-09-25",
+                         "2026-09-30"))
+
+# A token verification error (CSIAQ0197E) ran across these days.
+jwt_start <- as.Date("2026-09-30")
+jwt_end <- as.Date("2026-10-02")
+
+# The first Monday of August, the start of the daily error series.
+error_series_start <- as.Date("2026-08-03")
+
+# Launch-aligned window: FCAC's first two weeks end with the period.
+launch_window_days <- 14
+
+milestone_users <- 24000
+
+# Public relying parties from the rp schema. Several application names map to
+# one service, so aggregate after joining this. launch_date is stored as text.
+public_parties <- load_relying_parties(con) |>
+  filter(!is_internal) |>
+  distinct(application_name, service_name, launch_date) |>
+  mutate(launch_date = as.Date(launch_date))
+
+stopifnot(any(grepl("^FCAC", public_parties$service_name)))
+
+fcac_launch <- public_parties |>
+  filter(grepl("^FCAC", service_name)) |>
+  pull(launch_date) |>
+  min()
+
+# "%d" zero-pads, which would read as "October 01".
+format_long_date <- function(d) {
+  paste0(format(d, "%B "), as.integer(format(d, "%d")))
+}
+
+# Figure 1 --------------------------------------------------------------------
+#
+# Users since launch by first day, from the preliminary event stream. This role
+# cannot filter partition columns, so the day comes from the time string.
+signed_in_users <- tbl(
+  con, in_schema("ibm_verify_events_raw", "authentication_activity")
+) |>
+  filter(!is.na(subject), subject != "") |>
+  group_by(subject) |>
+  summarise(first_day = min(substr(time, 1L, 10L)), .groups = "drop") |>
+  collect() |>
+  transmute(user = subject, day = as.Date(first_day)) |>
+  filter(day <= period_end)
+
+# Successful SSO events to a public service; internal apps are excluded.
+partner_users <- tbl(
+  con, in_schema("ibm_verify_events_raw", "application_usage")
+) |>
+  filter(
+    result == "success", !is.na(userid), userid != "",
+    applicationname %in% !!public_parties$application_name
+  ) |>
+  group_by(userid) |>
+  summarise(first_day = min(substr(time, 1L, 10L)), .groups = "drop") |>
+  collect() |>
+  transmute(user = userid, day = as.Date(first_day)) |>
+  filter(day <= period_end)
+
+cumulative_users <- bind_rows(
+  all = count(signed_in_users, day, name = "new_users"),
+  partner = count(partner_users, day, name = "new_users"),
+  .id = "measure"
+) |>
+  arrange(measure, day) |>
+  group_by(measure) |>
+  mutate(users = cumsum(new_users)) |>
+  ungroup()
+
+# The stream lags the warehouse; this is the last day it holds.
+stream_end <- max(cumulative_users$day)
+
+# Users since launch on one measure, as of a day.
+users_on <- function(m, d) {
+  with(cumulative_users, max(users[measure == m & day <= d]))
+}
+
+all_total <- users_on("all", stream_end)
+partner_total <- users_on("partner", stream_end)
+idle_share <- 1 - partner_total / all_total
+
+# Weekly points at each week's Sunday; the last week ends where the stream does.
+weekly_users <- cumulative_users |>
+  mutate(week_end = pmin(monday_of(day) + 6, stream_end)) |>
+  group_by(measure, week_end) |>
+  summarise(users = max(users), .groups = "drop")
+
+# Figure 2 --------------------------------------------------------------------
+#
+# Users in each service's first days: YTD at the window's end less its value
+# before launch, since daily unique_users never sums.
+launch_aligned <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(
+    application_name %in% !!public_parties$application_name,
+    from_date <= period_end
+  ) |>
+  select(from_date, application_name, ytd_unique_users) |>
+  collect() |>
+  inner_join(public_parties, by = "application_name") |>
+  mutate(
+    age = as.integer(as.Date(from_date) - launch_date),
+    ytd_unique_users = coalesce(as.double(ytd_unique_users), 0)
+  ) |>
+  filter(age < launch_window_days) |>
+  group_by(service_name, application_name) |>
+  # YTD is cumulative, so the latest value in each span is its largest.
+  summarise(
+    users = max(ytd_unique_users) -
+      max(c(0, ytd_unique_users[age < 0])),
+    .groups = "drop"
+  ) |>
+  group_by(service_name) |>
+  summarise(users = sum(users), .groups = "drop") |>
+  mutate(is_fcac = grepl("^FCAC", service_name))
+
+fcac_users <- launch_aligned |> filter(is_fcac) |> pull(users)
+
+# Every other service that sits within twice FCAC's size at the same age.
+fcac_peers <- launch_aligned |>
+  filter(!is_fcac, users <= 2 * fcac_users) |>
+  arrange(desc(users))
+# Figure 3 --------------------------------------------------------------------
+#
+# Daily error events, four bot-day errors apart and the rest binned.
+# CSIBN0081E and CSIAP3512E are the same SMS limit, so they share a group.
+bot_error_groups <- c(
+  CSIBN0081E = "sms_limit",
+  CSIAP3512E = "sms_limit",
+  PHONE_VALIDATION_ERROR = "phone_invalid",
+  CSIAH0004E = "interrupted",
+  CSIAH2417E = "wrong_code"
+)
+
+error_daily <- tbl(con, in_schema("google_analytics", "error_events")) |>
+  filter(
+    as.Date(date) >= error_series_start, as.Date(date) <= ga_period_end
+  ) |>
+  group_by(date, error_code) |>
+  summarise(events = sum(eventcount, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(
+    day = as.Date(date),
+    events = as.double(events),
+    group = coalesce(unname(bot_error_groups[error_code]), "other")
+  ) |>
+  group_by(day, group) |>
+  summarise(events = sum(events), .groups = "drop")
+
+error_totals <- error_daily |>
+  group_by(day) |>
+  summarise(events = sum(events), .groups = "drop")
+
+# A typical weekday this period, leaving out every incident day.
+incident_days <- c(attack_days, seq(jwt_start, jwt_end, by = "day"))
+typical_errors <- error_totals |>
+  filter(
+    day >= period_start, as.integer(format(day, "%u")) <= 5L,
+    !day %in% incident_days
+  ) |>
+  summarise(m = median(events)) |>
+  pull(m)
+
+# The two bot days with the clearest error spikes, labelled on the chart.
+bot_error_days <- attack_days[1:2]
+
+# The largest wave of idle accounts, which left almost no trace in GA.
+headless_day <- max(attack_days)
+headless_accounts <- signed_in_users |>
+  filter(day == headless_day) |>
+  anti_join(partner_users, by = "user") |>
+  nrow()
+
+# Invalid phone numbers on the two bot days against an average other day.
+phone_invalid_multiple <- error_daily |>
+  filter(group == "phone_invalid") |>
+  right_join(distinct(error_totals, day), by = "day") |>
+  mutate(events = coalesce(events, 0), is_bot = day %in% bot_error_days) |>
+  summarise(m = mean(events[is_bot]) / mean(events[!is_bot])) |>
+  pull(m)
+```
+
+This is the **CanadaLogin Signal Check**, our read on CanadaLogin every two
+weeks. This time: user growth, the FCAC Secure Portal, and errors. The [last
+Signal Check](`r published_url("20260921_signal-check.html")`) is a two-minute
+read.
+
+**CanadaLogin users continue to climb, but the count may be inflated.** By
+`r format_long_date(stream_end)`, CanadaLogin had
+**`r comma(all_total)`** users, up from
+`r comma(milestone_users)` just three weeks
+before[.](https://www.youtube.com/watch?v=UqyT8IEBkvY){style="text-decoration: none;"}
+We know
+bots may have inflated that number (see the
+[incident channel](https://gcdigital.slack.com/archives/C0C2C6S8BS9)). New,
+preliminary data let us separate accounts that signed in to a partner service
+from accounts that were created and left idle, a pattern far more typical of
+bots than of real users. As of
+`r format_long_date(stream_end)`, **`r percent(idle_share, accuracy = 1)`** of
+accounts had never signed in to a partner service, leaving
+**`r comma(partner_total)`** accounts in use with live services. This view is
+only possible thanks to the new IBM Verify event stream.
+
+```{r users-two-ways}
+#| fig-alt: |
+#|   Line chart of CanadaLogin accounts since the April 2026 launch, one point
+#|   per week, for all accounts and for accounts that signed in to a partner
+#|   service. The lines rise together until mid-September, then all accounts
+#|   pull away, ending near 54,000 against 32,000.
+measure_labels <- c(
+  all = "All accounts",
+  partner = "Signed in to a partner service"
+)
+measure_colours <- c(
+  all = unname(colors$brand["red"]),
+  partner = unname(colors$brand["blue"])
+)
+
+final_points <- weekly_users |>
+  group_by(measure) |>
+  slice_max(week_end, n = 1) |>
+  ungroup()
+
+users_plot <- ggplot(weekly_users, aes(week_end, users, colour = measure)) +
+  annotate(
+    "rect", xmin = min(attack_days) - 3, xmax = max(attack_days) + 1,
+    ymin = -Inf, ymax = Inf, fill = colors$greyscale[3], alpha = 0.2
+  ) +
+  annotate(
+    "text", x = min(attack_days) - 4, y = all_total * 0.95, hjust = 1,
+    size = 3, colour = "grey30", label = "Suspected\nbot sign-ups"
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(data = final_points, size = 2.6) +
+  geom_text(
+    data = final_points, aes(label = comma(users)),
+    hjust = -0.2, fontface = "bold", size = 3.4, show.legend = FALSE
+  ) +
+  scale_colour_manual(
+    values = measure_colours, labels = measure_labels, name = NULL
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.06))
+  ) +
+  scale_x_date(
+    breaks = seq(series_start + 6, period_end, by = "week"),
+    date_labels = "%b %d", expand = expansion(mult = c(0.02, 0.12))
+  ) +
+  theme_cds() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = NULL, y = "Accounts since launch",
+    title = "Not every new account has signed in to a partner service",
+    subtitle = paste0(
+      "Accounts since the April 2026 launch, by week. Preliminary ",
+      "event data, through ", format_long_date(stream_end), "."
+    )
+  )
+
+add_cds_logo(add_watermark(users_plot, date = report_date,
+                           edition = params$edition))
+```
+
+**The FCAC Secure Portal had a typical start for a specialist service.** The
+Financial Consumer Agency of Canada moved its
+[Secure Portal](https://fcac-compliance-conformite-acfc.canada.ca/en-US/), where regulated
+financial institutions file compliance reports, to CanadaLogin on
+`r format_long_date(fcac_launch)`. Each institution gets at most
+[five users](https://fcac-compliance-conformite-acfc.canada.ca/en-US/UserGuide-EN#page=3).
+In its first `r launch_window_days` days, **`r fcac_users`** users reached it,
+close to
+`r paste0(fcac_peers$service_name, " (", fcac_peers$users, ")",
+          collapse = " and ")` at the same age.
+
+```{r launch-aligned}
+#| fig-alt: |
+#|   Horizontal bar chart of distinct users who reached each public service in
+#|   its own first 14 days on CanadaLogin, sorted largest to smallest and
+#|   labelled with values. ATIP's request service and GC Digital Talent lead by
+#|   far. The FCAC Secure Portal, highlighted in orange, sits with the smaller
+#|   specialist services at 59 users.
+launch_plot <- ggplot(
+  launch_aligned,
+  aes(users, reorder(service_name, users), fill = is_fcac)
+) +
+  geom_col(width = 0.65) +
+  geom_text(aes(label = comma(users)), hjust = -0.15, size = 3.2) +
+  scale_fill_manual(
+    values = c(
+      `TRUE` = unname(colors$brand["orange"]),
+      `FALSE` = unname(colors$brand["blue"])
+    ),
+    guide = "none"
+  ) +
+  scale_x_continuous(
+    labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.12))
+  ) +
+  theme_cds() +
+  theme(panel.grid.major.y = element_blank()) +
+  labs(
+    x = paste0("Users in the first ", launch_window_days, " days"), y = NULL,
+    title = "The FCAC Secure Portal started like other specialist services",
+    subtitle = paste0(
+      "Distinct users who reached each public service in its own first ",
+      launch_window_days, " days."
+    )
+  )
+
+add_cds_logo(add_watermark(launch_plot, date = report_date,
+                           edition = params$edition))
+```
+
+**Our new error data hint that bots drove the September spikes.** Error
+messages shown to users now reach our data lake daily, by type. On a typical
+weekday this period there were about `r comma(round(typical_errors, -2))`
+error events. On `r format_long_date(bot_error_days[1])` and
+`r as.integer(format(bot_error_days[2], "%d"))`, four errors that are
+otherwise rare rose together: invalid phone numbers, requests past our SMS
+limit, wrong codes, and sign-ins interrupted part way. Invalid phone numbers
+alone ran about `r round(phone_invalid_multiple, -1)` times their usual level.
+That mix looks more like automated attempts to send SMS codes than real users
+having trouble. The largest wave of suspected bot sign-ups, on
+`r format_long_date(headless_day)` (arrow), created about `r comma(round(headless_accounts, -3))` idle accounts but left
+almost no trace in these data. That suggests those bots ran without a normal
+browser, or blocked Google Analytics.
+
+```{r error-events}
+#| fig-height: 5
+#| fig-alt: |
+#|   Stacked bar chart of error events each day from August to early October
+#|   2026, with four errors in colour and the rest in grey. Most days are
+#|   mostly grey. On September 17 and 24, labelled as suspected bot traffic,
+#|   invalid phone numbers, SMS limit errors, wrong codes and interrupted
+#|   sign-ins make up a large part of the spikes. An arrow marks September 30,
+#|   when about 12,000 idle accounts were made that barely appear in these data.
+error_groups <- c(
+  sms_limit = "CSIBN0081E / CSIAP3512E: SMS limit reached",
+  phone_invalid = "PHONE_VALIDATION_ERROR: Invalid phone number",
+  interrupted = "CSIAH0004E: Sign-in interrupted (Back, refresh or second tab)",
+  wrong_code = "CSIAH2417E: Invalid one-time code",
+  other = "All other errors"
+)
+error_colours <- c(
+  sms_limit = unname(colors$brand["orange"]),
+  phone_invalid = unname(colors$brand["red"]),
+  interrupted = unname(colors$brand["blue"]),
+  wrong_code = unname(colors$brand["forest"]),
+  other = unname(colors$brand["grey"])
+)
+
+bot_labels <- error_totals |>
+  filter(day %in% bot_error_days) |>
+  mutate(label = "Suspected\nbot traffic")
+
+error_plot <- ggplot(
+  # The first level stacks on top, so the grey band caps each bar.
+  mutate(error_daily, group = factor(group, rev(names(error_groups)))),
+  aes(day, events, fill = group)
+) +
+  geom_col(width = 0.85) +
+  geom_text(
+    data = bot_labels, aes(day, events, label = label), inherit.aes = FALSE,
+    vjust = -0.3, size = 2.8, lineheight = 0.9, colour = "grey30"
+  ) +
+  # Marks the largest wave of idle accounts, explained in the prose.
+  annotate(
+    "segment", x = headless_day, xend = headless_day,
+    y = error_totals$events[error_totals$day == headless_day] + 1500,
+    yend = error_totals$events[error_totals$day == headless_day] + 150,
+    colour = "grey30", arrow = arrow(length = unit(0.12, "cm"))
+  ) +
+  scale_fill_manual(
+    values = error_colours, labels = error_groups,
+    breaks = names(error_groups), name = NULL
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.22))
+  ) +
+  scale_x_date(
+    breaks = seq(error_series_start + 6, ga_period_end, by = "week"),
+    date_labels = "%b %d"
+  ) +
+  guides(fill = guide_legend(ncol = 1)) +
+  theme_cds() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom",
+    legend.justification = "left",
+    legend.key.size = unit(0.35, "cm"),
+    legend.spacing.y = unit(0.05, "cm"),
+    legend.text = element_text(size = 9),
+    panel.grid.major.x = element_blank()
+  ) +
+  labs(
+    x = NULL, y = "Error events per day",
+    title = "Rare errors spiked together on the suspected bot days",
+    subtitle = paste0(
+      "Error events shown to users each day. Google Analytics, through ",
+      format_long_date(ga_period_end), "."
+    )
+  )
+
+# Taller figure, so the logo height fraction is scaled to match the others.
+add_cds_logo(
+  add_watermark(error_plot, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 5
+)
+```
+
+{{< include _footer_spooky.qmd >}}
+
+{{< include _analytics.qmd >}}
+
+{{< include _render-info.qmd >}}
