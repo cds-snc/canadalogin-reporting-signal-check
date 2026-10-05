@@ -61,8 +61,6 @@ error_series_start <- as.Date("2026-08-03")
 # Launch-aligned window: FCAC's first two weeks end with the period.
 launch_window_days <- 14
 
-milestone_users <- 24000
-
 # Public relying parties from the rp schema. Several application names map to
 # one service, so aggregate after joining this. launch_date is stored as text.
 public_parties <- load_relying_parties(con) |>
@@ -241,8 +239,8 @@ tell us about the September sign-up spikes.
 **CanadaLogin users continue to climb, but the count may be inflated.** By
 `r format_long_date(stream_end)`, CanadaLogin had
 **`r comma(all_total)`** users, up from
-`r comma(milestone_users)` just three weeks
-before[.](https://www.youtube.com/watch?v=UqyT8IEBkvY){style="text-decoration: none;"}
+24[,](https://www.youtube.com/watch?v=UbZFVoHj09E){style="text-decoration: none;"}000
+just three weeks before.
 We know
 bots may have inflated that number (see the
 [incident channel](https://gcdigital.slack.com/archives/C0C2C6S8BS9)). New,
