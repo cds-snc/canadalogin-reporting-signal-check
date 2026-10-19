@@ -1,0 +1,623 @@
+---
+title: "CanadaLogin Signal Check"
+subtitle: "For the two-week period of October 5 to 18"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-10-19"
+params:
+  edition: 9
+format:
+  html:
+    embed-resources: true
+    theme: [cosmo, _fonts.scss]   # _fonts.scss: self-hosted brand fonts
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries are frozen to the October 5 - 18, 2026 period.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+source("../R/publishing.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Watermark date: the date this report is first created.
+report_date <- as.Date("2026-10-19")
+
+period_start <- as.Date("2026-10-05")
+period_end <- as.Date("2026-10-18")
+
+# Google Analytics is exported on a two-day lag, so its view ends a day early.
+ga_period_end <- as.Date("2026-10-17")
+
+# Monday of the launch week; the service went live Apr 22.
+series_start <- as.Date("2026-04-20")
+
+# The hourly IBM Verify event stream went live (data pipeline PR #94).
+stream_live <- as.Date("2026-10-05")
+
+# A signature error (CSIAQ0197E) blocked most ATIP sign-ins; cause still
+# under investigation with ATIP and IBM.
+jwt_start <- as.Date("2026-09-30")
+jwt_end <- as.Date("2026-10-02")
+
+# The Monday the weekly SSO series starts, two weeks before the incident week.
+sso_series_start <- as.Date("2026-09-07")
+
+# Readership tracking began on this day.
+tracking_start <- as.Date("2026-07-23")
+
+prev_end <- period_start - 1
+
+# Public relying parties from the rp schema. Several application names map to
+# one service, so aggregate after joining this.
+relying_parties <- load_relying_parties(con) |>
+  filter(!is_internal)
+public_parties <- distinct(relying_parties, application_name, service_name)
+
+# Figure 1 --------------------------------------------------------------------
+#
+# Users by first day, from the event stream. This role cannot filter partitions,
+# so the day comes from the time string. "UNKNOWN" has no account behind it.
+stream_daily <- tbl(
+  con, in_schema("ibm_verify_events_raw", "authentication_activity")
+) |>
+  filter(!is.na(subject), subject != "", subject != "UNKNOWN") |>
+  group_by(subject) |>
+  summarise(first_day = min(substr(time, 1L, 10L)), .groups = "drop") |>
+  count(first_day, name = "new_users") |>
+  collect() |>
+  transmute(day = as.Date(first_day), new_users = as.double(new_users)) |>
+  arrange(day) |>
+  mutate(users = cumsum(new_users)) |>
+  filter(day <= period_end)
+
+# Weekly points at each week's Sunday; the count only rises within a week.
+weekly_users <- stream_daily |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(users = max(users), .groups = "drop")
+
+stream_total <- weekly_users$users[weekly_users$week_end == period_end]
+new_this_period <- stream_total -
+  weekly_users$users[weekly_users$week_end == prev_end]
+
+# Launches behind the two big steps in the user count. Both ATIP services
+# launched together, so they share one marker.
+launches <- relying_parties |>
+  mutate(label = case_when(
+    service_name == "GC Digital Talent" ~ "GC Digital Talent\nlaunch",
+    startsWith(service_name, "ATIP") ~ "ATIP services\nlaunch"
+  )) |>
+  filter(!is.na(label)) |>
+  group_by(label) |>
+  summarise(day = min(launch_date), .groups = "drop")
+stopifnot(nrow(launches) == 2L)
+
+# The first day the stream count reached 60,000.
+milestone <- 60000
+milestone_day <- min(stream_daily$day[stream_daily$users >= milestone])
+
+# Figure 2 --------------------------------------------------------------------
+#
+# Successful SSO events to each public service, by week. total_logins also
+# counts failed attempts, which ballooned during the incident.
+atip_name <- "ATIP Online Request Service"
+
+service_colours <- c(
+  "GC Digital Talent" = unname(colors$brand["blue"]),
+  "ATIP Online Request Service" = unname(colors$brand["orange"]),
+  "ATIP Online Management Tools" = unname(colors$brand["yellow"]),
+  "IRIS" = unname(colors$brand["forest"]),
+  "MyCGC" = unname(colors$brand["green"]),
+  "CED Client Space" = unname(colors$brand["sky"]),
+  "VAC Healthshare" = unname(colors$brand["grey"]),
+  "Other services" = unname(colors$greyscale[3])
+)
+
+# From launch, so ATIP's best week is checked against its whole history.
+sso_daily <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  filter(from_date >= series_start, from_date <= period_end) |>
+  transmute(
+    day = as.Date(from_date),
+    application_name,
+    sso_events = as.double(successful_logins)
+  ) |>
+  collect() |>
+  inner_join(public_parties, by = "application_name")
+
+# rp.alias is overwritten every weekday, and a dropped row would quietly
+# remove a service rather than raise anything.
+stopifnot(all(
+  setdiff(names(service_colours), "Other services") %in%
+    sso_daily$service_name
+))
+
+weekly_sso_all <- sso_daily |>
+  mutate(
+    week_end = monday_of(day) + 6,
+    service_group = if_else(
+      service_name %in% names(service_colours), service_name,
+      "Other services"
+    )
+  ) |>
+  group_by(week_end, service_group) |>
+  summarise(sso_events = sum(sso_events, na.rm = TRUE), .groups = "drop")
+
+weekly_sso <- filter(weekly_sso_all, week_end > sso_series_start)
+
+weekly_totals <- weekly_sso |>
+  group_by(week_end) |>
+  summarise(sso_events = sum(sso_events), .groups = "drop")
+
+atip_weekly <- weekly_sso_all |>
+  filter(service_group == atip_name) |>
+  arrange(week_end)
+
+incident_week <- monday_of(jwt_start) + 6
+atip_incident_week <- atip_weekly$sso_events[
+  atip_weekly$week_end == incident_week
+]
+atip_peak_week <- slice_max(atip_weekly, sso_events, n = 1)
+stopifnot(atip_peak_week$week_end >= period_start)
+
+# ATIP this period against the two weeks before the incident week.
+atip_in <- function(from, to) {
+  sum(sso_daily$sso_events[
+    sso_daily$service_name == atip_name &
+      sso_daily$day >= from & sso_daily$day <= to
+  ])
+}
+atip_this <- atip_in(period_start, period_end)
+atip_before <- atip_in(sso_series_start, sso_series_start + 13)
+atip_change <- atip_this / atip_before - 1
+
+# The token error as users saw it, from Google Analytics. Weekly events, since
+# daily distinct users cannot be summed across days.
+jwt_code <- "CSIAQ0197E"
+jwt_message <- "Signature verification of the JSON Web Token (JWT) failed."
+jwt_daily <- tbl(con, in_schema("google_analytics", "error_events")) |>
+  filter(
+    error_code == !!jwt_code,
+    as.Date(date) >= sso_series_start, as.Date(date) <= ga_period_end
+  ) |>
+  group_by(date) |>
+  summarise(
+    events = sum(eventcount, na.rm = TRUE),
+    # A floor: totalusers cannot be summed across rows.
+    users = max(totalusers, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  collect() |>
+  mutate(
+    day = as.Date(date), events = as.double(events), users = as.double(users)
+  )
+
+weekly_jwt <- jwt_daily |>
+  mutate(week_end = monday_of(day) + 6) |>
+  group_by(week_end) |>
+  summarise(events = sum(events), .groups = "drop") |>
+  right_join(distinct(weekly_sso, week_end), by = "week_end") |>
+  mutate(events = coalesce(events, 0))
+
+# A shorter repeat the next week.
+jwt_repeat <- jwt_daily |>
+  filter(day > jwt_end + 1, users >= 50) |>
+  arrange(day)
+stopifnot(nrow(jwt_repeat) >= 1L)
+
+# Figure 3 --------------------------------------------------------------------
+#
+# Dwell per edition over its first 14 days. Group on pagepath_redacted, never
+# pagepath, which holds the private token.
+dwell_marks <- c(1, 5, 15, 30, 60, 120, 300, 600)
+edition_window_days <- 14
+
+edition_events <- tbl(
+  con, in_schema("google_analytics", "meta_page_events")
+) |>
+  filter(
+    page_kind == "signal_check",
+    eventname %in% !!c("page_view", paste0("read_", dwell_marks, "s")),
+    as.Date(date) >= tracking_start,
+    as.Date(date) <= ga_period_end
+  ) |>
+  group_by(date, pagepath_redacted, pagetitle, eventname) |>
+  summarise(events = sum(eventcount, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(
+    day = as.Date(date),
+    events = as.double(events),
+    published = as.Date(
+      sub(".*/([0-9]{8})_signal-check\\.html$", "\\1", pagepath_redacted),
+      "%Y%m%d"
+    )
+  ) |>
+  # Editions sent before tracking began are missing their first days. Views
+  # before the send day are the team reviewing the draft.
+  filter(
+    published >= tracking_start,
+    day >= published, day < published + edition_window_days
+  )
+
+# Edition number from the page title's "#N", as the Readership dashboard does.
+edition_numbers <- edition_events |>
+  distinct(published, pagetitle) |>
+  mutate(edition = as.integer(sub(".*#([0-9]+).*", "\\1", pagetitle))) |>
+  filter(!is.na(edition)) |>
+  distinct(published, edition)
+
+stopifnot(!anyDuplicated(edition_numbers$published))
+
+edition_totals <- edition_events |>
+  inner_join(edition_numbers, by = "published") |>
+  group_by(edition, eventname) |>
+  summarise(events = sum(events), .groups = "drop")
+
+# Share of page views still open at each milestone, per edition and pooled.
+dwell_curve <- function(totals) {
+  views <- sum(totals$events[totals$eventname == "page_view"])
+  reached <- vapply(
+    dwell_marks,
+    \(s) sum(totals$events[totals$eventname == paste0("read_", s, "s")]),
+    numeric(1)
+  )
+  tibble(
+    seconds = dwell_marks, reached = reached, page_views = views,
+    share = reached / views
+  )
+}
+
+edition_curves <- edition_totals |>
+  group_by(edition) |>
+  group_modify(\(d, ...) dwell_curve(d)) |>
+  ungroup()
+
+edition_labels <- edition_numbers |>
+  arrange(edition) |>
+  mutate(panel = paste0(
+    "Signal Check #", edition, ", ", format(published, "%b "),
+    as.integer(format(published, "%d"))
+  ))
+edition_curves <- edition_curves |>
+  inner_join(edition_labels, by = "edition") |>
+  mutate(panel = factor(panel, edition_labels$panel))
+
+# When half the page views were still open, log-interpolated between the
+# milestones either side of 50%, matching the Readership dashboard.
+median_read <- function(seconds, share) {
+  above <- which(share >= 0.5)
+  if (length(above) == 0L) return(0)
+  i <- max(above)
+  if (i == length(seconds)) return(Inf)
+  step <- (share[i] - 0.5) / (share[i] - share[i + 1L])
+  exp(log(seconds[i]) + step * (log(seconds[i + 1L]) - log(seconds[i])))
+}
+
+# "20 seconds" under a minute, otherwise minutes to one decimal.
+format_read <- function(seconds, short = FALSE) {
+  if_else(
+    seconds < 60,
+    paste0(round(seconds), if (short) " s" else " seconds"),
+    paste0(round(seconds / 60, 1), if (short) " min" else " minutes")
+  )
+}
+
+edition_medians <- edition_curves |>
+  group_by(edition, panel) |>
+  summarise(
+    page_views = first(page_views),
+    median_seconds = median_read(seconds, share),
+    .groups = "drop"
+  )
+
+# The most-read edition, which held its readers the least.
+most_read <- slice_max(edition_medians, page_views, n = 1)
+stopifnot(most_read$median_seconds == min(edition_medians$median_seconds))
+
+# As a compound adjective: "a 57-second read", "a 1.1-minute read".
+read_length <- function(seconds) {
+  if_else(
+    seconds < 60, paste0(round(seconds), "-second"),
+    paste0(round(seconds / 60, 1), "-minute")
+  )
+}
+
+# The previous edition's median, for the closing line's joke.
+previous_median <- edition_medians$median_seconds[
+  edition_medians$edition == params$edition - 1
+]
+
+pooled_curve <- dwell_curve(edition_totals)
+pooled_views <- pooled_curve$page_views[1]
+pooled_median <- median_read(pooled_curve$seconds, pooled_curve$share)
+share_at <- function(s) pooled_curve$share[pooled_curve$seconds == s]
+
+# Sessions by where they came from, every edition since tracking began.
+edition_sources <- tbl(
+  con, in_schema("google_analytics", "meta_page_traffic")
+) |>
+  filter(
+    page_kind == "signal_check",
+    as.Date(date) >= tracking_start,
+    as.Date(date) <= ga_period_end
+  ) |>
+  group_by(sessionsource) |>
+  summarise(sessions = sum(sessions, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(sessions = as.double(sessions)) |>
+  arrange(desc(sessions))
+
+stopifnot(
+  edition_sources$sessionsource[1] == "slack",
+  all(c("teams", "email") %in% edition_sources$sessionsource)
+)
+slack_share <- edition_sources$sessions[1] / sum(edition_sources$sessions)
+```
+
+This is the **CanadaLogin Signal Check**, our read on CanadaLogin every two
+weeks. This edition covers three things. First, how many users CanadaLogin
+has, counted with our new IBM Verify event stream. Second, how the ATIP
+Online Request Service recovered from a short outage. Third, in the spirit of
+the season, how you read this report.
+
+**CanadaLogin passed `r comma(milestone)` users, and we can trust the count
+again.** In past editions, we asked you to read our user counts with caution.
+That changed on `r format_long_date(stream_live)`, when our new IBM Verify
+event stream went live. Every hour, it brings in IBM Verify's record of each
+sign-in, user by user, so we count users directly instead of relying on a
+running total from IBM. Each user appears in these data only as a scrambled
+code. We never see names, email addresses, phone numbers or IP addresses,
+yet we can still count each user once. By `r format_long_date(period_end)`, CanadaLogin had
+**`r comma(stream_total)`** users since launch, and
+**`r comma(new_this_period)`** of them joined in these two weeks. The count
+passed `r comma(milestone)` on `r format_long_date(milestone_day)`.
+
+```{r users-since-launch}
+#| fig-alt: |
+#|   Line chart of CanadaLogin users since the April 2026 launch, one point per
+#|   week, from the IBM Verify event stream. Dashed lines mark the launch of
+#|   GC Digital Talent in June and the ATIP services in September, each
+#|   followed by a jump, and the stream going live on October 5. The line ends
+#|   at 61,845 users on October 18.
+stream_latest <- slice_max(weekly_users, week_end, n = 1)
+
+users_plot <- ggplot(weekly_users, aes(week_end, users)) +
+  geom_vline(
+    xintercept = c(stream_live, launches$day), linetype = "dashed",
+    colour = "grey40"
+  ) +
+  geom_text(
+    data = launches, aes(x = day - 2, y = stream_total * 0.6, label = label),
+    hjust = 1, size = 3, colour = "grey30", lineheight = 0.9
+  ) +
+  annotate(
+    "text", x = stream_live - 2, y = stream_total * 0.3, hjust = 1,
+    size = 3, colour = "grey30", label = "Event stream\nlive"
+  ) +
+  geom_line(colour = colors$brand["blue"], linewidth = 1) +
+  geom_point(data = stream_latest, colour = colors$brand["red"], size = 3) +
+  geom_text(
+    data = stream_latest, aes(label = comma(users)),
+    colour = colors$brand["red"], hjust = 1.15, vjust = -0.8,
+    fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_x_date(
+    breaks = seq(series_start + 6, period_end, by = "week"),
+    date_labels = "%b %d", expand = expansion(mult = c(0.02, 0.03))
+  ) +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Users since launch",
+    title = paste("CanadaLogin passed", comma(milestone), "users"),
+    subtitle = "Users since launch, by week, from the IBM Verify event stream."
+  )
+
+add_cds_logo(add_watermark(users_plot, date = report_date,
+                           edition = params$edition))
+```
+
+**ATIP use set a new high after a short sign-in issue.** From
+`r format_long_date(jwt_start)` to `r format_long_date(jwt_end)`, most
+sign-ins to both ATIP services failed a digital signature check that
+confirms each request really came from the service (red). A shorter repeat followed on
+`r format_long_date(min(jwt_repeat$day))` and
+`r as.integer(format(max(jwt_repeat$day), "%d"))`. No other service was
+affected, both recovered quickly, and ATIP and IBM are still looking into
+the cause (see the
+[incident channel](https://gcdigital.slack.com/archives/C0C7W2PF4UT)). In
+the week ending `r format_long_date(atip_peak_week$week_end)`, the Online
+Request Service, where Canadians ask for government records, had
+**`r comma(atip_peak_week$sso_events)`** successful SSO events, its busiest
+week yet, and over these two weeks its use was
+**`r percent(atip_change, accuracy = 1)`** higher than in the two weeks
+before the issue.
+
+```{r sso-by-service}
+#| fig-height: 5.4
+#| fig-alt: |
+#|   Two stacked charts sharing a weekly axis from September 13 to October 18,
+#|   2026. The top is successful SSO events to public services by week, with
+#|   the ATIP Online Request Service in orange as the largest service. Below
+#|   it, red bars count signature errors (CSIAQ0197E). In the week
+#|   ending October 4, the errors jump to about 10,000 and ATIP's share drops;
+#|   both recover the next week, and ATIP reaches its highest week by October 18.
+week_limits <- c(min(weekly_sso$week_end), max(weekly_sso$week_end)) +
+  c(-3.5, 3.5)
+week_axis <- scale_x_date(
+  breaks = unique(weekly_sso$week_end), date_labels = "%b %d",
+  limits = week_limits, expand = expansion(0)
+)
+incident_band <- annotate(
+  "rect", xmin = incident_week - 3.5, xmax = incident_week + 3.5,
+  ymin = -Inf, ymax = Inf, fill = colors$greyscale[3], alpha = 0.2
+)
+
+sso_plot <- ggplot(
+  # The first level stacks on top, so the grey band caps each bar.
+  mutate(weekly_sso, service_group = factor(
+    service_group, rev(names(service_colours))
+  )),
+  aes(week_end, sso_events, fill = service_group)
+) +
+  incident_band +
+  geom_col(width = 5) +
+  geom_text(
+    data = weekly_totals, aes(label = comma(sso_events), fill = NULL),
+    vjust = -0.5, size = 3.2
+  ) +
+  annotate(
+    "text", x = incident_week, y = Inf, vjust = 1.4, size = 3,
+    colour = "grey30", label = "ATIP issue"
+  ) +
+  scale_fill_manual(
+    values = service_colours, breaks = names(service_colours), name = NULL
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.15))
+  ) +
+  week_axis +
+  theme_cds() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) +
+  labs(
+    x = NULL, y = "Successful\nSSO events",
+    title = "ATIP use dipped during its sign-in issue, then hit a new high",
+    subtitle = paste0(
+      "Successful SSO events to public services (top) and signature ",
+      "errors (bottom), by week."
+    )
+  )
+
+jwt_plot <- ggplot(weekly_jwt, aes(week_end, events)) +
+  incident_band +
+  geom_col(width = 5, fill = colors$brand["red"]) +
+  geom_text(aes(label = comma(events)), vjust = -0.5, size = 3.2) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.3))
+  ) +
+  week_axis +
+  theme_cds() +
+  theme(panel.grid.major.x = element_blank()) +
+  labs(
+    x = "Week ending", y = "Signature\nerrors",
+    subtitle = paste0(jwt_code, ': "', jwt_message, '"')
+  )
+
+# Stacked on one shared axis; the legend sits beside both.
+combined <- patchwork::wrap_plots(
+  sso_plot, jwt_plot, ncol = 1, heights = c(2.4, 1), guides = "collect"
+)
+
+# Taller figure, so the logo height fraction is scaled to match the others.
+add_cds_logo(
+  add_watermark(combined, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 5.4
+)
+```
+
+**Readers keep a Signal Check open for about a minute.** It is almost
+Halloween, the spooky season, and what is more spooky than self-reflection?
+So we turned our data on ourselves, using Google Analytics events to analyze
+the `r comma(pooled_views)` Signal Check views over the last three months.
+The median view lasted **`r format_read(pooled_median)`**, and
+**`r percent(share_at(600), accuracy = 1)`** stayed open for 10 minutes or
+more. Our closing line usually promises a two-minute read, and
+`r percent(share_at(120), accuracy = 1)` of views last the full two minutes.
+The link we post in Slack brings in more readers than either the Teams link
+or what we send out via email, at `r percent(slack_share, accuracy = 1)` of
+visits.
+
+```{r readership-dwell}
+#| fig-height: 4.8
+#| fig-alt: |
+#|   Six small line charts, one per Signal Check from #3 to #8, each showing
+#|   the share of its page views still open from 1 second to 10 minutes over
+#|   its first two weeks, with the other editions' curves pale behind it and
+#|   each panel's median time labelled. Medians run from about 1 to 2
+#|   minutes, except Signal Check #6, the most read, at 20 seconds.
+mark_labels <- c("1s", "5s", "15s", "30s", "1m", "2m", "5m", "10m")
+
+# Every other edition's curve, drawn pale behind each panel's own.
+other_curves <- edition_curves |>
+  rename(other = panel) |>
+  tidyr::crossing(panel = levels(edition_curves$panel)) |>
+  filter(as.character(other) != panel) |>
+  mutate(panel = factor(panel, levels(edition_curves$panel)))
+
+panel_counts <- edition_medians |>
+  transmute(
+    panel,
+    label = paste0(
+      comma(page_views), " views\nmedian ",
+      format_read(median_seconds, short = TRUE)
+    )
+  )
+
+dwell_plot <- ggplot(edition_curves, aes(seconds, share)) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", colour = "grey55",
+             linewidth = 0.35) +
+  geom_line(data = other_curves, aes(group = other),
+            colour = colors$greyscale[4], linewidth = 0.5) +
+  geom_line(colour = colors$brand["blue"], linewidth = 1) +
+  geom_point(colour = colors$brand["blue"], size = 1.4) +
+  geom_text(
+    data = panel_counts, aes(x = 600, y = 1, label = label),
+    inherit.aes = FALSE, hjust = 1, vjust = 1, size = 3, lineheight = 0.9,
+    colour = "grey35"
+  ) +
+  scale_x_log10(breaks = dwell_marks, labels = mark_labels) +
+  scale_y_continuous(
+    labels = percent, limits = c(0, 1), breaks = c(0, 0.5, 1)
+  ) +
+  facet_wrap(~panel, ncol = 3) +
+  theme_cds() +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", hjust = 0)
+  ) +
+  labs(
+    x = "Time the page was open and visible", y = "Page views still open",
+    title = "The median Signal Check view lasts about a minute",
+    subtitle = paste0(
+      "Each edition over its first two weeks (blue), with the others behind ",
+      "it. Google Analytics."
+    )
+  )
+
+# Taller figure, so the logo height fraction is scaled to match the others.
+add_cds_logo(
+  add_watermark(dwell_plot, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 4.8
+)
+```
+
+*Missed the previous edition? [Signal Check
+#`r params$edition - 1`](`r published_url("20261005_signal-check.html")`) is,
+by its median, a `r read_length(previous_median)` read.*
+
+{{< include _footer_spooky.qmd >}}
+
+{{< include _analytics.qmd >}}
+
+{{< include _render-info.qmd >}}
