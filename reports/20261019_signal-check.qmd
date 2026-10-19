@@ -452,12 +452,12 @@ before the issue.
 ```{r sso-by-service}
 #| fig-height: 5.4
 #| fig-alt: |
-#|   Two stacked charts sharing a weekly axis from September 13 to October 18,
-#|   2026. The top is successful SSO events to public services by week, with
-#|   the ATIP Online Request Service in orange as the largest service. Below
-#|   it, red bars count signature errors (CSIAQ0197E). In the week
-#|   ending October 4, the errors jump to about 10,000 and ATIP's share drops;
-#|   both recover the next week, and ATIP reaches its highest week by October 18.
+#|   Two stacked charts on a weekly axis, September 13 to October 18, 2026:
+#|   successful SSO events to public services, with the two ATIP services in
+#|   orange and yellow, above red bars of signature errors (CSIAQ0197E). In the
+#|   week ending October 4, errors jump to about 10,000 and both ATIP services
+#|   drop, with a smaller rise of about 900 the next week. The ATIP Online
+#|   Request Service then reaches its highest week by October 18.
 week_limits <- c(min(weekly_sso$week_end), max(weekly_sso$week_end)) +
   c(-3.5, 3.5)
 week_axis <- scale_x_date(
