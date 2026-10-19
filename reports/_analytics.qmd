@@ -23,18 +23,13 @@ analytics_edition <- if (exists("params") && !is.null(params$edition)) {
 }
 
 # Every edition renders the same <title>, so page_title is overridden to tell
-# them apart: `ga_page_title` from the params block, else title + edition +
-# subtitle.
+# them apart: `ga_page_title` from the params block if set, else title +
+# edition ("CanadaLogin Signal Check #9"). Older editions set the param, which
+# keeps their existing GA labels.
 analytics_title <- if (exists("params") && !is.null(params$ga_page_title)) {
   params$ga_page_title
 } else {
-  paste0(
-    rmarkdown::metadata$title,
-    analytics_edition,
-    if (!is.null(rmarkdown::metadata$subtitle)) {
-      paste0(" - ", rmarkdown::metadata$subtitle)
-    }
-  )
+  paste0(rmarkdown::metadata$title, analytics_edition)
 }
 
 cat(sprintf(
