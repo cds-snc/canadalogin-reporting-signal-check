@@ -1,15 +1,14 @@
 ---
-title: "CanadaLogin Signal Check" 
+title: "CanadaLogin Signal Check"
 subtitle: "For the two-week period of January 1-14"
 author: "EDCP Data and Research Team"  # example@cds-snc.ca
-date: "2026-01-01"
+date: "2026-01-15"
 params:
   edition: 0
-  ga_page_title: "Signal Check #0"
 format:
   html:
     embed-resources: true
-    theme: [cosmo, _fonts.scss]   # _fonts.scss: GC Design System fonts
+    theme: [cosmo, _fonts.scss]   # _fonts.scss: self-hosted brand fonts
     toc: false
     fig-width: 8
     fig-height: 3.4
@@ -20,140 +19,195 @@ execute:
 ---
 
 ```{r setup}
+# Style template. Built-in R datasets stand in for the frozen Athena queries,
+# so it renders without an AWS session. In a real edition, every query lives
+# here, inline, under its figure's header, and the figure chunks only plot.
+source("../R/connection.R")
 source("../R/branding.R")
 source("../R/colours.R")
+source("../R/publishing.R")
 suppressPackageStartupMessages({
   library(dplyr)
   library(ggplot2)
   library(scales)
 })
 
-report_date <- as.Date("2026-01-01")
+# Every date is named once, here, as a hardcoded literal; derive the rest.
+# Watermark date: the date this report is first created.
+report_date <- as.Date("2026-01-15")
+
+period_start <- as.Date("2026-01-01")
+period_end <- period_start + 13
+
+# Figure 1 --------------------------------------------------------------------
+#
+# The scale read: one series over time, latest point called out.
+scale_series <- economics |>
+  filter(date >= as.Date("2010-01-01")) |>
+  transmute(date, value = psavert)
+
+scale_latest <- slice_max(scale_series, date, n = 1)
+
+# Figure 2 --------------------------------------------------------------------
+#
+# A category comparison, with one newcomer highlighted.
+categories <- mpg |>
+  count(manufacturer, name = "n") |>
+  slice_max(n, n = 8) |>
+  mutate(is_new = manufacturer == "audi")
+
+newcomer <- filter(categories, is_new)
+
+# Figure 3 --------------------------------------------------------------------
+#
+# A stacked series: a few groups in colour, everything else binned grey.
+highlight_cities <- c("Houston", "Dallas", "Austin")
+
+monthly_sales <- txhousing |>
+  filter(year == 2014, !is.na(sales)) |>
+  mutate(
+    month_end = as.Date(paste(year, month, 1, sep = "-")),
+    group = if_else(city %in% highlight_cities, city, "Other")
+  ) |>
+  group_by(month_end, group) |>
+  summarise(sales = sum(sales), .groups = "drop")
+
+peak_month <- monthly_sales |>
+  group_by(month_end) |>
+  summarise(sales = sum(sales), .groups = "drop") |>
+  slice_max(sales, n = 1)
 ```
 
-This is a style template for the biweekly Signal Check. The graphs below
-demonstrate the report's visual conventions: brand colours, CDS logo placement,
-watermark, `theme_cds()` typography, and axis formatting.
+This is the **CanadaLogin Signal Check**, our read on CanadaLogin every two
+weeks. This edition covers three things: how far usage grew, how a new
+service compares with the rest, and one more story from the period.
 
-Each body paragraph opens with a bolded action title: a single-clause statement
-of the paragraph's takeaway that sets the reader's expectation before they read
-on. It does not need to flow grammatically into the sentence that follows.
+**Each paragraph opens with its takeaway, not its topic.** The bolded action
+title is one short clause a reader can skim. The body then carries what the
+figure cannot, and bolds only the one or two numbers that prove the point: here,
+the latest value of **`r scale_latest$value`%** on
+`r format_long_date(scale_latest$date)`. The first figure is always the scale
+read: how much CanadaLogin is used, and how that changed.
 
-**The headline is a called-out time series.** The first graph is a time-series
-line chart, the format used for the headline metric each report. The most recent
-data point is called out in brand red with a bold label.
-
-```{r headline-graph}
+```{r figure-1}
 #| fig-alt: |
-#|   Line chart of US personal savings rate from 1967 to 2015, used as a
-#|   placeholder for the headline unique-users growth curve. The final data
-#|   point is highlighted in red.
+#|   Line chart of US personal savings rate from 2010 to 2015, a placeholder
+#|   for the scale read. The final point is highlighted in red with its value.
 
-econ <- economics |>
-  filter(date >= as.Date("2010-01-01")) |>
-  mutate(is_current = date == max(date))
-
-headline_plot <- ggplot(econ, aes(date, psavert)) +
+scale_plot <- ggplot(scale_series, aes(date, value)) +
   geom_line(color = colors$brand["blue"], linewidth = 1) +
-  geom_point(
-    data = subset(econ, is_current),
-    color = colors$brand["red"], size = 3.2
-  ) +
+  geom_point(data = scale_latest, color = colors$brand["red"], size = 3.2) +
   geom_text(
-    data = subset(econ, is_current),
-    aes(label = paste0(psavert, "%")),
+    data = scale_latest, aes(label = paste0(value, "%")),
     color = colors$brand["red"], vjust = -1, fontface = "bold", size = 3.6
   ) +
   scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
   theme_cds() +
   labs(
-    x = NULL, y = "Personal savings rate (%)",
-    title = "Placeholder headline metric over time",
-    subtitle = "US personal savings rate (economics dataset), 2010 onward"
+    x = NULL, y = "Savings rate (%)",
+    title = "Titles state the takeaway, as the paragraph does",
+    subtitle = "Subtitles state the measure, the source, and the date range."
   )
 
-add_cds_logo(add_watermark(headline_plot, date = report_date, edition = params$edition))
+add_cds_logo(add_watermark(scale_plot, date = report_date,
+                           edition = params$edition))
 ```
 
-**Bar charts line up categories for comparison.** The second graph is a
-horizontal bar chart, the format used for comparing categories side by side. One
-bar is highlighted in brand orange to show how a new or notable entry can be
-called out.
+**A newcomer is easier to judge beside its peers.** Highlight the new entry
+in brand orange and label every bar, so no reader has to estimate from the
+axis. Here the newcomer has **`r newcomer$n`** models.
 
-```{r adoption-graph}
+```{r figure-2}
 #| fig-alt: |
-#|   Horizontal bar chart of vehicle count by manufacturer from the mpg
-#|   dataset, used as a placeholder for sign-ins by application. Bars are
-#|   coloured in brand blue, with one highlighted in orange as a new entry.
+#|   Horizontal bar chart of model counts for the eight largest manufacturers
+#|   in the mpg dataset, a placeholder for a service comparison. Bars are brand
+#|   blue with one highlighted in orange, and every bar carries its value.
 
-top_makes <- mpg |>
-  count(manufacturer, name = "n_models") |>
-  slice_max(n_models, n = 8) |>
-  mutate(highlight = manufacturer == "audi")
-
-adoption_plot <- ggplot(
-  top_makes,
-  aes(reorder(manufacturer, n_models), n_models, fill = highlight)
-) +
-  geom_col(width = 0.6) +
-  geom_text(aes(label = n_models), hjust = -0.15, size = 3.6) +
-  coord_flip() +
+category_plot <- ggplot(categories, aes(n, reorder(manufacturer, n),
+                                        fill = is_new)) +
+  geom_col(width = 0.65) +
+  geom_text(aes(label = comma(n)), hjust = -0.15, size = 3.2) +
   scale_fill_manual(
-    values = c("FALSE" = unname(colors$brand["blue"]), "TRUE" = unname(colors$brand_action["orange"]))
+    values = c(
+      `TRUE` = unname(colors$brand_action["orange"]),
+      `FALSE` = unname(colors$brand["blue"])
+    ),
+    guide = "none"
   ) +
-  scale_y_continuous(
-    limits = c(0, NA), expand = expansion(mult = c(0, 0.18))
+  scale_x_continuous(
+    labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.12))
   ) +
-  guides(fill = "none") +
   theme_cds() +
+  theme(panel.grid.major.y = element_blank()) +
   labs(
-    x = NULL, y = "Vehicle count",
-    title = "Placeholder adoption by category",
-    subtitle = "Top manufacturers by model count (mpg dataset)"
+    x = "Models", y = NULL,
+    title = "The newcomer sits mid-pack",
+    subtitle = "Model count by manufacturer (mpg dataset)."
   )
 
-add_cds_logo(add_watermark(adoption_plot, date = report_date, edition = params$edition))
+add_cds_logo(add_watermark(category_plot, date = report_date,
+                           edition = params$edition))
 ```
 
-**Dense weekly series stress-test the date axis.** The third graph is a dense
-weekly time series. It shows how `theme_cds()` handles a long date axis with many
-data points. The line uses brand forest green, a second single-series colour
-option beyond the headline blue.
+**Name a few groups and let the rest fall back to grey.** When many series
+compete, colour only the ones the paragraph talks about. Sales peaked at
+**`r comma(peak_month$sales)`** in
+`r format(peak_month$month_end, "%B")`. A taller figure needs its logo
+height scaled so the logo stays the same size on the page.
 
-```{r trend-graph}
+```{r figure-3}
+#| fig-height: 5
 #| fig-alt: |
-#|   Line chart of average diamond price by week from 2008 to 2014, used as a
-#|   placeholder for a weekly sign-in success rate trend. The line is coloured
-#|   in brand forest green.
+#|   Stacked bar chart of monthly home sales in Texas in 2014, a placeholder
+#|   for a daily series with a few groups picked out. Houston, Dallas and
+#|   Austin are in colour and all other cities are one grey band.
 
-diamond_weekly <- diamonds |>
-  mutate(
-    price_bin = cut(carat, breaks = seq(0, 6, 0.5)),
-    week = as.Date(cut(as.Date("2008-01-01") + row_number() %% (365 * 6), "week"))
-  ) |>
-  group_by(week) |>
-  summarise(avg_price = mean(price), .groups = "drop") |>
-  filter(!is.na(week))
+group_labels <- c(
+  Houston = "Houston", Dallas = "Dallas", Austin = "Austin",
+  Other = "All other cities"
+)
+group_colours <- c(
+  Houston = unname(colors$brand["orange"]),
+  Dallas = unname(colors$brand["red"]),
+  Austin = unname(colors$brand["blue"]),
+  Other = unname(colors$brand["grey"])
+)
 
-trend_plot <- ggplot(diamond_weekly, aes(week, avg_price)) +
-  geom_line(color = colors$brand_base["forest"], linewidth = 1) +
-  geom_point(color = colors$brand_base["forest"], size = 1.2) +
-  scale_y_continuous(
-    labels = dollar, limits = c(0, NA),
-    expand = expansion(mult = c(0, 0.1))
+stacked_plot <- ggplot(
+  # The first level stacks on top, so the grey band caps each bar.
+  mutate(monthly_sales, group = factor(group, rev(names(group_labels)))),
+  aes(month_end, sales, fill = group)
+) +
+  geom_col(width = 25) +
+  scale_fill_manual(
+    values = group_colours, labels = group_labels,
+    breaks = names(group_labels), name = NULL
   ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA), expand = expansion(mult = c(0, 0.08))
+  ) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
   theme_cds() +
+  theme(
+    legend.position = "bottom",
+    legend.justification = "left",
+    panel.grid.major.x = element_blank()
+  ) +
   labs(
-    x = NULL, y = "Average price ($)",
-    title = "Placeholder weekly trend",
-    subtitle = "Average diamond price by week (diamonds dataset)"
+    x = NULL, y = "Sales per month",
+    title = "Three cities carry most of the volume",
+    subtitle = "Monthly home sales in Texas, 2014 (txhousing dataset)."
   )
 
-add_cds_logo(add_watermark(trend_plot, date = report_date, edition = params$edition))
+# Taller figure, so the logo height fraction is scaled to match the others.
+add_cds_logo(
+  add_watermark(stacked_plot, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 5
+)
 ```
 
-Reports typically close with a short one-liner that sums up any low-volume
-supplementary data the report did not graph above.
+*Missed the previous edition? [Signal Check
+#8](`r published_url("20261005_signal-check.html")`) is a two-minute read.*
 
 {{< include _footer.qmd >}}
 
