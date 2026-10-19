@@ -25,3 +25,5 @@ data/*
 # macOS
 .DS_Store
 Icon?
+
+style-guide.md

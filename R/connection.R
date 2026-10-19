@@ -19,7 +19,7 @@
 required_packages <- c(
   "DBI", "RAthena", "dplyr", "dbplyr", "stringr", "tidyr", "lubridate",
   "ggplot2", "scales", "cowplot", "magick", "dotenv", "ggbrick",
-  "glue", "readr", "purrr", "gt"
+  "glue", "readr", "purrr", "gt", "patchwork"
 )
 
 check_packages <- function() {
@@ -109,4 +109,10 @@ connect_athena <- function() {
 monday_of <- function(d) {
   d <- as.Date(d)
   d - ((as.integer(format(d, "%u")) - 1L))
+}
+
+# A date as it reads in prose, "October 1". "%d" zero-pads ("October 01").
+format_long_date <- function(d) {
+  d <- as.Date(d)
+  paste0(format(d, "%B "), as.integer(format(d, "%d")))
 }

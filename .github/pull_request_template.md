@@ -1,53 +1,74 @@
-# CanadaLogin Signal Check #NN
+# CanadaLogin Signal Check #N
 
-For the two-week period of (month DD - month DD).
+For the two-week period of Month D to D.
 
-DO NOT POST THE LINK TO THE REPORT IN THE PR.
-Link it on Slack instead, tagging the reviewers.
+Do not post the report link here. Share the preview on Slack and tag the reviewers.
 
-## Pre-merge checklist
+## This edition
 
-- [ ] Preflight safety checks pass and data is up-to-date
-- [ ] `fig-alt` set on every graph chunk
-- [ ] Footer is present and all links work
-- [ ] Watermark shows the correct edition number and creation date
-- [ ] Subtitle states the correct reporting period
-- [ ] `lintr` clean
-- [ ] Preview rendered
-- [ ] Link shared with reviewers via Slack
+1. Figure 1:
+2. Figure 2:
+3. Figure 3:
 
-## Merge criteria
+## For reviewers
 
-Do not merge before **(at least two hours in the future, fill this in)**
-(two hours after this PR was opened). Merge once either:
+<!-- Anything to weigh: anomalies raised with the team, caveats, departures
+from a cookbook recipe, partner-sensitive wording. Delete if none. -->
 
-- everyone in @cds-snc/edcp-data-and-research who is not on leave has approved, or
-- the two-hour window above has passed with no comment asking to hold.
+**Shared changes:** <!-- Footers, R/, _quarto.yml. These change every
+edition on re-render. Write "None" if none. -->
 
-## Note to Reviewers
+## Author checklist
 
-- If you need more time, comment and ask for it!
-- If the report looks good, approve the PR to move it along
-- Communicate changes here, as comments, or comment directly on the code
+Data
 
-## Squash commit message
+- [ ] Preflight in `explore.qmd` passes for this period
+- [ ] Every causal claim is checked against the per-application breakdown
+- [ ] Each metric follows its cookbook recipe, or the departure is noted above
 
-Merge with "Squash and merge" and replace the prefilled message with a
-conventional commit naming the edition. Don't use octothorpes (#) to denote edition
-number as they confuse Github.
+Writing
+
+- [ ] Each paragraph opens with a bolded takeaway and bolds one or two numbers
+- [ ] Every number in the prose is an inline expression
+- [ ] No unlaunched partner is named, and no incident is blamed without a confirmed cause
+- [ ] The closing line links the previous edition
+
+Figures
+
+- [ ] Alt text numbers match the latest render
+- [ ] Axes start at zero, or the figure says why not
+
+Render
+
+- [ ] `lintr` is clean
+- [ ] Footer archive links are filled in (they come from `.env`)
+- [ ] October: spooky footer, with the bat only on the last edition before Halloween
+- [ ] Preview is published and loads, and the link is shared on Slack
+
+## Reviewing
+
+- Read it as an executive would: does each bold title tell you the point?
+- Flag any number that looks wrong or unexplained.
+- Ask for more time if you need it. Approve when it is ready.
+
+## Merge
+
+No sooner than two hours after this PR opened. Merge once everyone in
+@cds-snc/edcp-data-and-research who is not on leave has approved, or the two
+hours pass with no request to hold.
+
+Squash and merge with this message. Leave out "#", which GitHub reads as an
+issue link:
 
 ```text
 feat: add signal check edition N
 ```
 
-## Post-merge checklist
+## After merge
 
-- [ ] Re-render from `main`
-- [ ] Publish via `cds-snc/canadalogin-signal-check-publishing`
-- [ ] Upload to Google Drive
-- [ ] Upload to SharePoint
-- [ ] Send the email to readers
-- [ ] Post in EDCP Teams channel
-- [ ] Post in #edcp-data-and-research
-- [ ] Crosspost link to #canadalogin
-- [ ] Add message text to publishing repository
+- [ ] Re-render from `main` and re-publish with `./publish.sh reports/<file>.html --push` (the URL stays the same)
+- [ ] Check that no number moved in the re-render
+- [ ] Save the message text in the publishing repo's `messages/`
+- [ ] Upload to Google Drive and SharePoint
+- [ ] Email readers
+- [ ] Post in the EDCP Teams channel and #edcp-data-and-research, and crosspost to #canadalogin
