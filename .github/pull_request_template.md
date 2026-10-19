@@ -23,7 +23,6 @@ edition on re-render. Write "None" if none. -->
 Data
 
 - [ ] Preflight in `explore.qmd` passes for this period
-- [ ] Unusual numbers went to the team before going in the report
 - [ ] Every causal claim is checked against the per-application breakdown
 - [ ] Each metric follows its cookbook recipe, or the departure is noted above
 
