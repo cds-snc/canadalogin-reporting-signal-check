@@ -202,7 +202,7 @@ The most recent complete Mon-Sun two-week block with sign-in data. Graphs still
 plot weekly points.
 
 ```{r resolve-period}
-max_data_date <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+max_data_date <- tbl(con, in_schema("ibm_verify_events_transformed", "events_auth_total_logins")) |>
   summarise(m = max(from_date, na.rm = TRUE)) |>
   pull(m) |>
   as.Date()
@@ -225,15 +225,14 @@ if (period_end < default_period_end) {
 ```
 
 ```{r anomalies}
-auth_daily <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
-  filter(from_date >= as.Date(launch_week_start), from_date <= as.Date(period_end)) |>
+auth_daily <- tbl(con, in_schema("ibm_verify_events_transformed", "events_auth_total_logins")) |>
+  filter(as.Date(from_date) >= as.Date(launch_week_start), as.Date(from_date) <= as.Date(period_end)) |>
   transmute(
     day = as.Date(from_date),
     unique_users = as.double(unique_users),
     successful_logins = as.double(successful_logins),
     failed_logins = as.double(failed_logins),
-    ytd_unique_users = as.double(ytd_unique_users),
-    rolling_365d_unique_users = as.double(rolling_365d_unique_users)
+    ytd_unique_users = as.double(ytd_unique_users)
   ) |>
   collect() |>
   arrange(day)
@@ -413,11 +412,9 @@ dash_table(
 The headline story every report opens with: is the userbase growing?
 
 ::: {.callout-warning}
-The cookbook says not to quote `ytd_unique_users` or `rolling_365d_unique_users`
-until the pipeline is fixed: IBM Verify computes both over a window longer than
-its 90 days of per-person data. Daily and month-to-date counts are unaffected.
-The YTD, rolling, adoption-curve, and applications-per-credential sections are
-for monitoring only.
+`ytd_unique_users` is computed from raw events and never decreases. The
+adoption-curve and applications-per-credential sections are for monitoring
+only.
 :::
 
 ## Users since launch, two ways (preliminary event stream)
@@ -594,8 +591,8 @@ month fits inside IBM Verify's 90-day retention, so it is valid. Each month is
 its last day's reading; the current month is partial.
 
 ```{r mtd-data}
-mtd_monthly <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
-  filter(from_date >= as.Date(launch_date), from_date <= as.Date(period_end)) |>
+mtd_monthly <- tbl(con, in_schema("ibm_verify_events_transformed", "events_auth_total_logins")) |>
+  filter(as.Date(from_date) >= as.Date(launch_date), as.Date(from_date) <= as.Date(period_end)) |>
   transmute(day = as.Date(from_date), mtd_unique_users = as.double(mtd_unique_users)) |>
   collect() |>
   mutate(month = format(day, "%Y-%m")) |>
@@ -703,64 +700,7 @@ dash_table(
 :::
 :::
 
-## Rolling 365-day unique users (true trailing-window reach)
-
-`rolling_365d_unique_users`, the trailing 365-day distinct count. It is null
-before 2026-06-13, so the series starts there.
-
-```{r rolling-365-data}
-# Week-ending value, not max: a trailing-365 count can fall as users age out.
-rolling365 <- auth_daily |>
-  filter(!is.na(rolling_365d_unique_users)) |>
-  mutate(week_end = monday_of(day) + 6) |>
-  group_by(week_end) |>
-  summarise(
-    rolling_365d_unique_users = rolling_365d_unique_users[which.max(day)],
-    .groups = "drop"
-  ) |>
-  arrange(week_end)
-```
-
-::: {.column-page}
-::: {.grid}
-::: {.g-col-7}
-```{r fig-rolling365}
-#| fig-alt: |
-#|   Line chart of rolling 365-day unique users by week, starting mid-June 2026
-#|   when the column was implemented. The series rises steadily and currently
-#|   tracks the year-to-date count. The latest week is marked in red.
-ggplot(rolling365, aes(week_end, rolling_365d_unique_users)) +
-  geom_line(color = unname(colors$brand["blue"]), linewidth = 0.7) +
-  geom_point(
-    data = slice_max(rolling365, week_end, n = 1),
-    color = unname(colors$brand["red"]), size = 3
-  ) +
-  scale_y_continuous(
-    labels = comma, limits = c(0, NA),
-    expand = expansion(mult = c(0, 0.1))
-  ) +
-  scale_x_weeks(rolling365$week_end) +
-  theme_dash() +
-  labs(x = NULL, y = "Rolling 365-day unique users",
-       title = "Rolling 365-day unique users",
-       subtitle = "Null before 2026-06-13, so the series starts there")
-```
-:::
-::: {.g-col-5}
-```{r tbl-rolling365}
-#| echo: false
-dash_table(
-  rolling365,
-  columns = list(
-    week_end = colDef(name = "Week ending", align = "left"),
-    rolling_365d_unique_users = colDef(name = "Rolling 365d users",
-                                       format = colFormat(separators = TRUE))
-  )
-)
-```
-:::
-:::
-:::
+The event-stream tables have no rolling 365-day column, so there is no rolling 365-day section.
 
 # Adoption {#sec-adoption}
 
@@ -779,7 +719,7 @@ rp_timeline <- relying_parties |>
   arrange(launch_date)
 
 # First appearance in the data lake, to cross-check the registry's launch_date.
-first_seen <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+first_seen <- tbl(con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")) |>
   group_by(application_name) |>
   summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
   collect() |>
@@ -864,10 +804,10 @@ Sum of `app_login_counts.total_logins`, public apps only. The bar is the period;
 the weekly trend since launch is the read to trust.
 
 ```{r signins-data}
-signins_period <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+signins_period <- tbl(con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")) |>
   filter(
-    from_date >= as.Date(period_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(period_start),
+    as.Date(from_date) <= as.Date(period_end),
     !application_name %in% internal_apps
   ) |>
   group_by(application_name) |>
@@ -879,10 +819,10 @@ signins_period <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
   collect() |>
   left_join(relying_parties, by = "application_name")
 
-signins_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+signins_weekly <- tbl(con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")) |>
   filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(launch_week_start),
+    as.Date(from_date) <= as.Date(period_end),
     !application_name %in% internal_apps
   ) |>
   transmute(
@@ -1058,10 +998,10 @@ Cumulative `ytd_unique_users` per public app, re-based to day 1 at each app's
 launch and capped at 90 days, to compare how fast each builds reach.
 
 ```{r adoption-curve-data}
-adoption_curve <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+adoption_curve <- tbl(con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")) |>
   filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(launch_week_start),
+    as.Date(from_date) <= as.Date(period_end),
     !application_name %in% internal_apps
   ) |>
   transmute(
@@ -1140,10 +1080,10 @@ service_launches <- relying_parties |>
 
 aligned_days <- as.integer(period_end - max(service_launches$launch_date)) + 1L
 
-launch_aligned <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+launch_aligned <- tbl(con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")) |>
   filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(launch_week_start),
+    as.Date(from_date) <= as.Date(period_end),
     !application_name %in% internal_apps
   ) |>
   transmute(
@@ -1282,10 +1222,10 @@ Volume and success rate per factor from one query. The rate uses outcome events
 only, not "sent". Low-volume factors post noisy rates.
 
 ```{r mfa-period-data}
-mfa_period <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+mfa_period <- tbl(con, in_schema("ibm_verify_events_transformed", "events_mfa_activity")) |>
   filter(
-    from_date >= as.Date(period_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(period_start),
+    as.Date(from_date) <= as.Date(period_end),
     result %in% c("success", "failure")
   ) |>
   group_by(mfa_type, result) |>
@@ -1368,10 +1308,10 @@ factors, outcomes for the rest. FIDO2 has no "sent" event, so counting only
 
 ```{r mfa-waffle-data}
 otp_types <- c("sms_otp", "email_otp", "voice_otp")
-mfa_factor_mix <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+mfa_factor_mix <- tbl(con, in_schema("ibm_verify_events_transformed", "events_mfa_activity")) |>
   filter(
-    from_date >= as.Date(period_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(period_start),
+    as.Date(from_date) <= as.Date(period_end),
     result == "sent" |
       (result %in% c("success", "failure") & !mfa_type %in% otp_types)
   ) |>
@@ -1446,10 +1386,10 @@ The weekly rate and the volume behind it. A rate move on rising volume means
 something different from the same move on flat volume.
 
 ```{r mfa-weekly-data}
-mfa_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+mfa_weekly <- tbl(con, in_schema("ibm_verify_events_transformed", "events_mfa_activity")) |>
   filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(launch_week_start),
+    as.Date(from_date) <= as.Date(period_end),
     result %in% c("success", "failure")
   ) |>
   transmute(day = as.Date(from_date), result, count = as.double(count)) |>
@@ -1523,10 +1463,10 @@ Per-factor rate, to spot a factor that is harder to clear. Factors under 0.5% of
 the latest week's attempts are left off the graph; the table has all of them.
 
 ```{r mfa-factor-trend-data}
-mfa_factor_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+mfa_factor_weekly <- tbl(con, in_schema("ibm_verify_events_transformed", "events_mfa_activity")) |>
   filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(launch_week_start),
+    as.Date(from_date) <= as.Date(period_end),
     result %in% c("success", "failure")
   ) |>
   transmute(
@@ -1611,10 +1551,10 @@ outcomes for FIDO2.
 otp_types <- c("sms_otp", "email_otp", "voice_otp")
 sign_in_types <- c("sms_otp", "voice_otp", "fido2")
 
-signin_factor_weekly <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+signin_factor_weekly <- tbl(con, in_schema("ibm_verify_events_transformed", "events_mfa_activity")) |>
   filter(
-    from_date >= as.Date(launch_week_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(launch_week_start),
+    as.Date(from_date) <= as.Date(period_end),
     mfa_type %in% sign_in_types,
     result == "sent" |
       (result %in% c("success", "failure") & !mfa_type %in% otp_types)
@@ -1702,10 +1642,10 @@ Daily, because a weekly series collapses the mid-period rollout into one point.
 # date arithmetic inside filter() fails.
 passkey_window_start <- period_start - 7L
 
-passkey_daily <- tbl(con, in_schema("ibm_verify", "mfa_activity")) |>
+passkey_daily <- tbl(con, in_schema("ibm_verify_events_transformed", "events_mfa_activity")) |>
   filter(
-    from_date >= as.Date(passkey_window_start),
-    from_date <= as.Date(period_end),
+    as.Date(from_date) >= as.Date(passkey_window_start),
+    as.Date(from_date) <= as.Date(period_end),
     mfa_type == "fido2",
     result %in% c("success", "failure")
   ) |>
@@ -1761,8 +1701,8 @@ inflate it, so it is shown for all apps and for public apps only.
 ```{r apps-per-credential-data}
 # Week-ending value of each cumulative series (max, as ytd rises within a
 # week), per-app sums split by internal flag, then the ratio.
-app_ytd_weekly <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
-  filter(from_date >= as.Date(launch_week_start), from_date <= as.Date(period_end)) |>
+app_ytd_weekly <- tbl(con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")) |>
+  filter(as.Date(from_date) >= as.Date(launch_week_start), as.Date(from_date) <= as.Date(period_end)) |>
   transmute(
     application_name,
     day = as.Date(from_date),
@@ -2769,7 +2709,7 @@ It shows whether demand per user moved as the userbase grew.
 calls_per_user <- tbl(con, in_schema("call_centre", "weekly_activity_report")) |>
   select(date_range_start, date_range_end, calls_accepted, test_calls) |>
   cross_join(
-    tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
+    tbl(con, in_schema("ibm_verify_events_transformed", "events_auth_total_logins")) |>
       select(dau_date = date, unique_users)
   ) |>
   filter(
