@@ -93,7 +93,7 @@ run_preflight_safety_check <- function(con,
 
   # An application_name that does not resolve through rp.alias would be
   # dropped silently by an inner join, so surface it here.
-  data_lake_parties <- tbl(con, in_schema("ibm_verify", "app_login_counts")) |>
+  data_lake_parties <- tbl(con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")) |>
     group_by(application_name) |>
     summarise(first_seen = min(from_date, na.rm = TRUE), .groups = "drop") |>
     collect() |>
@@ -147,9 +147,9 @@ run_preflight_safety_check <- function(con,
   reporting_period_end <- most_recent_sunday
   reporting_period_start <- reporting_period_end - 13L
 
-  days_with_data <- tbl(con, in_schema("ibm_verify", "auth_total_logins")) |>
-    filter(from_date >= as.Date(reporting_period_start),
-           from_date <= as.Date(reporting_period_end)) |>
+  days_with_data <- tbl(con, in_schema("ibm_verify_events_transformed", "events_auth_total_logins")) |>
+    filter(as.Date(from_date) >= as.Date(reporting_period_start),
+           as.Date(from_date) <= as.Date(reporting_period_end)) |>
     transmute(day = as.Date(from_date)) |>
     distinct() |>
     collect() |>
