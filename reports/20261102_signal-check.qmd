@@ -341,8 +341,11 @@ add_cds_logo(add_watermark(partner_plot, date = report_date,
 ```
 
 **You can track task success in the Experience Monitoring dashboard.** The
-Task Success Report, previously published every month, will now be shared
-when there is something noteworthy to report. For regular updates, EDCP
+monthly Task Success Report will no longer be published regularly. When
+there is something noteworthy in task success, we will report it here, in
+the Signal Check, or in the [#edcp-data-and-research Slack
+channel](https://gcdigital.slack.com/archives/C0A6S9F7KV4) if it's urgent.
+For regular updates, EDCP
 employees can check the [Experience Monitoring
 dashboard](`r published_url("experience-monitoring.html")`), which tracks
 task success for each task and is updated weekly, on Tuesdays. Our team has
