@@ -1,4 +1,4 @@
-# CanadaLogin Signal Check #N
+# CanadaLogin Signal Check N
 
 For the two-week period of Month D to D.
 
@@ -13,10 +13,7 @@ Do not post the report link here. Share the preview on Slack and tag the reviewe
 ## For reviewers
 
 <!-- Anything to weigh: anomalies raised with the team, caveats, departures
-from a cookbook recipe, partner-sensitive wording. Delete if none. -->
-
-**Shared changes:** <!-- Footers, R/, _quarto.yml. These change every
-edition on re-render. Write "None" if none. -->
+from a cookbook recipe, partner-sensitive wording. Write "None" if none. -->
 
 ## Author checklist
 
@@ -30,7 +27,6 @@ Writing
 
 - [ ] Each paragraph opens with a bolded takeaway and bolds one or two numbers
 - [ ] Every number in the prose is an inline expression
-- [ ] No unlaunched partner is named, and no incident is blamed without a confirmed cause
 - [ ] The closing line links the previous edition
 
 Figures
@@ -42,12 +38,10 @@ Render
 
 - [ ] `lintr` is clean
 - [ ] Footer archive links are filled in (they come from `.env`)
-- [ ] October: spooky footer, with the bat only on the last edition before Halloween
 - [ ] Preview is published and loads, and the link is shared on Slack
 
 ## Reviewing
 
-- Read it as an executive would: does each bold title tell you the point?
 - Flag any number that looks wrong or unexplained.
 - Ask for more time if you need it. Approve when it is ready.
 

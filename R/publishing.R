@@ -15,11 +15,19 @@ publishing_repo_root <- function() {
   stop("canadalogin-signal-check-publishing not found beside this repo")
 }
 
+# Rotating a page's token leaves a "moved" notice at the old one, written from
+# the publishing repo's templates/moved-stub.html. It is not the live page.
+is_moved_stub <- function(path) {
+  head_lines <- readLines(path, n = 20L, warn = FALSE)
+  any(grepl("has a new private link", head_lines, fixed = TRUE))
+}
+
 # URL of a published file by name, e.g. published_url("support.html").
 # Pass utm_source = NULL for a bare URL. Stops if the file is not published
 # exactly once.
 published_url <- function(file, utm_source = "report_link") {
   hits <- Sys.glob(file.path(publishing_repo_root(), "r", "*", file))
+  hits <- hits[!vapply(hits, is_moved_stub, logical(1))]
   if (length(hits) != 1L) {
     stop(file, " is published ", length(hits), " times, expected once")
   }
