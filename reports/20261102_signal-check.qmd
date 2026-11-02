@@ -1,0 +1,533 @@
+---
+title: "CanadaLogin Signal Check"
+subtitle: "For the two-week period of October 19 to November 1"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-11-02"
+params:
+  edition: 10
+format:
+  html:
+    embed-resources: true
+    theme: [cosmo, _fonts.scss]   # _fonts.scss: self-hosted brand fonts
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries are frozen to the October 19 - November 1, 2026 period.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+source("../R/publishing.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Watermark date: the date this report is first created.
+report_date <- as.Date("2026-11-02")
+
+period_start <- as.Date("2026-10-19")
+period_end <- as.Date("2026-11-01")
+
+# Google Analytics is exported on a two-day lag, so its view ends a day early.
+ga_period_end <- as.Date("2026-10-31")
+
+# Monday of the launch week; the service went live Apr 22.
+series_start <- as.Date("2026-04-20")
+
+# The first month boundary after launch, where figure 1's axis labels start.
+first_month_break <- as.Date("2026-05-01")
+
+# Daily share of monthly users: whole calendar months only.
+share_start <- as.Date("2026-05-01")
+share_end <- as.Date("2026-10-31")
+
+prev_end <- period_start - 1
+
+# Public relying parties from the rp schema, one row per application name.
+relying_parties <- load_relying_parties(con) |>
+  filter(!is_internal)
+
+# Figure 1 --------------------------------------------------------------------
+#
+# Public services and the departments and agencies behind them, by registry
+# launch date. A department counts once, from its first service.
+public_services <- distinct(
+  relying_parties, service_name, operator, gc_orgid, launch_date
+)
+
+partners_on <- function(d) {
+  live <- public_services[public_services$launch_date <= d, ]
+  c(services = nrow(live), departments = n_distinct(live$gc_orgid))
+}
+
+partner_growth <- tibble(day = seq(series_start, period_end, by = "day")) |>
+  mutate(
+    services = vapply(day, \(d) partners_on(d)[["services"]], integer(1)),
+    departments = vapply(day, \(d) partners_on(d)[["departments"]], integer(1))
+  )
+
+partners_now <- partners_on(period_end)
+
+newcomers <- public_services |>
+  filter(launch_date >= period_start, launch_date <= period_end) |>
+  arrange(launch_date)
+
+# Users by first day, from the event stream. The day comes from the time string
+# because this role cannot filter partitions; "UNKNOWN" has no account.
+stream_daily <- tbl(
+  con, in_schema("ibm_verify_events_raw", "authentication_activity")
+) |>
+  filter(!is.na(subject), subject != "", subject != "UNKNOWN") |>
+  group_by(subject) |>
+  summarise(first_day = min(substr(time, 1L, 10L)), .groups = "drop") |>
+  count(first_day, name = "new_users") |>
+  collect() |>
+  transmute(day = as.Date(first_day), new_users = as.double(new_users)) |>
+  arrange(day) |>
+  mutate(users = cumsum(new_users)) |>
+  filter(day <= period_end)
+
+stream_total <- max(stream_daily$users)
+new_this_period <- stream_total -
+  max(stream_daily$users[stream_daily$day <= prev_end])
+
+# Figure 2 --------------------------------------------------------------------
+#
+# Migration task success, new-account funnel: the stored 7-day and daily
+# rates, never recomputed.
+migration_funnel <- "migration_new_to_cl"
+
+migration_rates <- tbl(
+  con, in_schema("google_analytics", "funnel_metrics_current")
+) |>
+  filter(
+    funnel_id == migration_funnel,
+    metric_id == "task_success",
+    window_days %in% c("1", "7"),
+    breakdown_value == "RESERVED_TOTAL",
+    !window_incomplete
+  ) |>
+  select(window_days, window_end, funnel_version, value) |>
+  collect() |>
+  mutate(window_end = as.Date(window_end)) |>
+  filter(window_end <= ga_period_end)
+
+# Starters are the rate's denominator, users who did not skip the prompt.
+migration_starters <- tbl(
+  con, in_schema("google_analytics", "funnels_current")
+) |>
+  filter(
+    funnel_id == migration_funnel,
+    window_days == "1",
+    breakdown_value == "RESERVED_TOTAL",
+    funnelstepname == "migration_not_skipped",
+    !window_incomplete
+  ) |>
+  select(window_end, starters = activeusers) |>
+  collect() |>
+  mutate(window_end = as.Date(window_end), starters = as.double(starters)) |>
+  filter(window_end <= ga_period_end)
+
+migration_daily <- migration_rates |>
+  filter(window_days == "1") |>
+  inner_join(migration_starters, by = "window_end")
+
+migration_weekly <- filter(migration_rates, window_days == "7") |>
+  arrange(window_end)
+
+# The first full Monday-Sunday week, read at its Sunday.
+migration_first <- migration_weekly |>
+  filter(format(window_end, "%u") == "7") |>
+  slice_min(window_end, n = 1)
+migration_latest <- slice_max(migration_weekly, window_end, n = 1)
+
+# ATIP's share of the latest week's starters. ATIP traffic had no service name
+# in Google Analytics until October 20, so earlier weeks undercount it.
+atip_starters <- tbl(con, in_schema("google_analytics", "funnels_current")) |>
+  filter(
+    funnel_id == migration_funnel,
+    window_days == "7",
+    funnelstepname == "migration_not_skipped",
+    !window_incomplete,
+    as.Date(window_end) == ga_period_end
+  ) |>
+  select(breakdown_value, starters = activeusers) |>
+  collect()
+
+# Google Analytics names the Request Service by its long form.
+is_atip <- startsWith(atip_starters$breakdown_value, "Access to Information") |
+  startsWith(atip_starters$breakdown_value, "ATIP")
+atip_share <- sum(atip_starters$starters[is_atip]) /
+  atip_starters$starters[atip_starters$breakdown_value == "RESERVED_TOTAL"]
+
+# ATIP's two services joined on the same day.
+atip_launch <- min(
+  relying_parties$launch_date[startsWith(relying_parties$service_name, "ATIP")]
+)
+
+# Figure 3 --------------------------------------------------------------------
+#
+# Daily share of monthly users (DAU/MAU) per application and calendar month,
+# per the cookbook's daily-share-of-monthly-users recipe.
+app_logins <- tbl(
+  con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")
+)
+
+first_seen <- app_logins |>
+  group_by(application_name) |>
+  summarise(first_day = min(as.Date(from_date), na.rm = TRUE))
+
+services <- tbl(con, in_schema("rp", "alias")) |>
+  inner_join(tbl(con, in_schema("rp", "service")), by = "rp_id") |>
+  select(application_name = alias, service_name_en, is_internal)
+
+monthly_share <- app_logins |>
+  # whole, finished calendar months only
+  filter(
+    as.Date(from_date) >= share_start,
+    as.Date(from_date) <= share_end
+  ) |>
+  group_by(
+    application_name, month = floor_date(as.Date(from_date), "month")
+  ) |>
+  summarise(
+    user_days = sum(unique_users, na.rm = TRUE),
+    # mtd_unique_users only grows within a month, so its maximum is the
+    # month's distinct users even when the last day has no row
+    monthly_active_users = max(mtd_unique_users, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  inner_join(first_seen, by = "application_name") |>
+  # live for the whole month: first row before the 1st
+  filter(first_day < month) |>
+  # a left join keeps an application with no alias row
+  left_join(services, by = "application_name") |>
+  filter(!coalesce(is_internal, FALSE)) |>
+  mutate(
+    days_in_month = day(last_day_of_month(month)),
+    dau_mau_ratio = as.double(user_days) / days_in_month /
+      monthly_active_users,
+    active_days_per_user = as.double(user_days) / monthly_active_users
+  ) |>
+  collect() |>
+  mutate(month = as.Date(month))
+
+latest_month <- max(monthly_share$month)
+
+# The two ATIP services sit at opposite ends, so their rows name who uses them.
+audience_tags <- c(
+  "ATIP Online Management Tools" = "staff",
+  "ATIP Online Request Service" = "public"
+)
+
+# One row per application in the latest month. MyCGC runs on two platforms,
+# so its rows name the platform.
+share_labels <- monthly_share |>
+  filter(month == latest_month) |>
+  add_count(service_name_en, name = "apps_in_service") |>
+  transmute(application_name, label = case_when(
+    apps_in_service > 1 ~ paste0(
+      service_name_en, " (",
+      sub(".*CGC - (.*) - Prod$", "\\1", application_name), ")"
+    ),
+    service_name_en %in% names(audience_tags) ~ paste0(
+      service_name_en, " (", audience_tags[service_name_en], ")"
+    ),
+    .default = service_name_en
+  ))
+
+monthly_share <- inner_join(
+  monthly_share, share_labels, by = "application_name"
+)
+share_latest <- filter(monthly_share, month == latest_month)
+share_earlier <- filter(monthly_share, month < latest_month)
+
+share_top <- slice_max(share_latest, dau_mau_ratio, n = 1)
+share_bottom <- slice_min(share_latest, dau_mau_ratio, n = 1)
+
+# Every user signing in on exactly one day of the month.
+share_floor <- 1 / unique(share_latest$days_in_month)
+```
+
+This is the **CanadaLogin Signal Check**, where we tell you what's
+interesting in CanadaLogin reporting this week. This edition covers three things: the services and departments now
+using CanadaLogin, how to keep up to date with task success metrics, and how
+frequently a user of a given online service signs in.
+
+**CanadaLogin now serves `r partners_now[["services"]]` public services from
+`r partners_now[["departments"]]` departments and agencies.** Two services
+joined in the last two weeks: the `r newcomers$service_name[1]` on
+`r format_long_date(newcomers$launch_date[1])` and
+`r newcomers$service_name[2]` on
+`r format_long_date(newcomers$launch_date[2])`. Both are just starting,
+with only a handful of users so far. Users kept growing too: CanadaLogin had
+**`r comma(stream_total)`** users since launch by
+`r format_long_date(period_end)`, and **`r comma(new_this_period)`** of them
+joined in the last two weeks.
+
+```{r partner-growth}
+#| fig-alt: |
+#|   Step chart from April to November 1, 2026, of public services on
+#|   CanadaLogin (blue) and the departments and agencies behind them (green).
+#|   Both start at 1 in April. By November 1 there are 11 services from 9
+#|   departments and agencies, with two services added in the last two weeks.
+partner_long <- partner_growth |>
+  tidyr::pivot_longer(c(services, departments), names_to = "measure") |>
+  # Departments draw last, so the green line shows where the two overlap.
+  mutate(measure = factor(measure, c("services", "departments")))
+
+partner_colours <- c(
+  services = unname(colors$brand["blue"]),
+  departments = unname(colors$brand["green"])
+)
+partner_labels <- c(
+  services = "public services",
+  departments = "departments and agencies"
+)
+
+partner_ends <- filter(partner_long, day == period_end) |>
+  mutate(label = paste(value, partner_labels[measure]))
+
+partner_plot <- ggplot(partner_long, aes(day, value, colour = measure)) +
+  annotate(
+    "rect", xmin = period_start, xmax = period_end, ymin = -Inf, ymax = Inf,
+    fill = colors$greyscale[5]
+  ) +
+  annotate(
+    "text", x = period_start - 2, y = 1, hjust = 1, vjust = 0, size = 3,
+    colour = "grey30", lineheight = 0.9,
+    label = paste0("New this period:\n", paste(newcomers$service_name,
+                                               collapse = "\n"))
+  ) +
+  geom_step(linewidth = 1) +
+  geom_point(data = partner_ends, size = 2.6) +
+  geom_text(
+    data = partner_ends, aes(label = label), hjust = 1, vjust = -0.9,
+    fontface = "bold", size = 3.4
+  ) +
+  scale_colour_manual(values = partner_colours, guide = "none") +
+  scale_y_continuous(
+    limits = c(0, NA), breaks = seq(0, 12, by = 2),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  # Monthly, not weekly: the counts change a few times a season.
+  scale_x_date(
+    breaks = seq(first_month_break, period_end, by = "month"),
+    date_labels = "%b", expand = expansion(mult = c(0.02, 0.01))
+  ) +
+  theme_cds() +
+  labs(
+    x = NULL, y = "On CanadaLogin",
+    title = "More services, and more departments, are joining CanadaLogin",
+    subtitle = paste0(
+      "Public services and the departments and agencies that run them, by ",
+      "launch date."
+    )
+  )
+
+add_cds_logo(add_watermark(partner_plot, date = report_date,
+                           edition = params$edition))
+```
+
+**You can track task success in the Experience Monitoring dashboard.** The
+Task Success Report, previously published every month, will now be shared
+when there is something noteworthy to report. For regular updates, EDCP
+employees can check the [Experience Monitoring
+dashboard](`r published_url("experience-monitoring.html")`), which tracks
+task success for each task and is updated weekly, on Tuesdays. Our team has
+used it internally until now, and we are working on updating it to make it
+more user friendly.
+
+The chart below is one of the Experience Monitoring dashboard's figures. It
+shows migration: users moving an old sign-in, such as GCKey, to a new
+CanadaLogin account. The violet line is the
+share of users who finished over the past seven days, and each grey dot is a
+single day, sized by how many users started. Migration success rose from
+`r percent(migration_first$value, accuracy = 1)` in early August to
+**`r percent(migration_latest$value, accuracy = 1)`** by
+`r format_long_date(ga_period_end)`. Most of these users come from ATIP,
+which had **`r percent(atip_share, accuracy = 1)`** of starters in the
+latest week, and the jump in early September came from a few very busy
+days after ATIP joined CanadaLogin.
+
+```{r migration-task-success}
+#| fig-height: 4.2
+#| fig-alt: |
+#|   The Experience Monitoring dashboard's task success chart for migration to
+#|   a new CanadaLogin account, August to October 31, 2026: a violet 7-day
+#|   rate over grey daily points sized by starters. The rate rises from 53% in
+#|   early August to 68% by October 31. A labelled arrow marks ATIP joining
+#|   on September 2, when large daily points lift the line to about 84% for a
+#|   week.
+# Styled after the dashboard's funnel chart, so readers recognise it there.
+expmon_accent <- "#4B2E83"
+expmon_annotation <- "grey45"
+expmon_headroom <- 0.2
+
+# A labelled arrow points down at the 7-day line on the day ATIP joined.
+atip_on_line <- approx(
+  migration_weekly$window_end, migration_weekly$value, atip_launch
+)$y
+
+migration_plot <- ggplot() +
+  annotate(
+    "segment", x = atip_launch, xend = atip_launch,
+    y = atip_on_line + 0.15, yend = atip_on_line + 0.03,
+    colour = expmon_annotation, linewidth = 0.5,
+    arrow = grid::arrow(length = grid::unit(0.06, "inches"), type = "closed")
+  ) +
+  annotate(
+    "text", x = atip_launch, y = atip_on_line + 0.19,
+    label = paste0(
+      "ATIP joins CanadaLogin, ", format(atip_launch, "%b "),
+      as.integer(format(atip_launch, "%d"))
+    ),
+    colour = expmon_annotation, fontface = "bold", size = 3.3
+  ) +
+  geom_point(
+    data = migration_daily, aes(window_end, value, size = starters),
+    colour = "grey70", alpha = 0.6
+  ) +
+  scale_size(range = c(0.4, 2.4), labels = comma, name = "Starters per day") +
+  # Grouped by version so the line breaks where the definition changes.
+  geom_line(
+    data = migration_weekly,
+    aes(window_end, value, group = funnel_version),
+    colour = expmon_accent, linewidth = 1
+  ) +
+  geom_point(
+    data = migration_latest, aes(window_end, value),
+    colour = expmon_accent, size = 2.4
+  ) +
+  geom_text(
+    data = migration_latest,
+    aes(window_end, value, label = percent(value, accuracy = 1)),
+    colour = expmon_accent, vjust = 2, fontface = "bold", size = 3.6
+  ) +
+  scale_y_continuous(
+    labels = label_percent(accuracy = 1), limits = c(0, 1),
+    breaks = seq(0, 1, by = 0.25),
+    expand = expansion(mult = c(0, expmon_headroom)), oob = oob_keep
+  ) +
+  scale_x_date(
+    breaks = seq(monday_of(min(migration_daily$window_end)) + 6,
+                 ga_period_end, by = "week"),
+    date_labels = "%b %d"
+  ) +
+  theme_cds() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.y = element_text(margin = margin(r = 8)),
+    legend.position = "bottom",
+    legend.justification = "left"
+  ) +
+  labs(
+    x = NULL, y = "Task success rate",
+    title = "Task Success: Migration, new CanadaLogin account",
+    subtitle = paste(
+      "7-day rolling rate (violet line) over the daily rate (grey points).",
+      "All relying parties. Rate is of users who answered the migration prompt.",
+      sep = "\n"
+    )
+  )
+
+# Taller figure, so the logo height fraction is scaled to match the others.
+add_cds_logo(
+  add_watermark(migration_plot, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 4.2
+)
+```
+
+**Most users sign in on about two days a month.** A new measure, the
+[daily share of monthly
+users](https://cds-snc.github.io/canadalogin-metrics-cookbook/cookbook/ibm_verify/daily-share-of-monthly-users.html),
+shows how frequently a user of a given online service signs in. It is the
+share of a month's users who sign in on a typical day, effectively daily
+active users over monthly active users (DAU/MAU). If every user signed in
+on just one day a month, it would be about
+`r percent(share_floor, accuracy = 1)`.
+
+In `r format(latest_month, "%B")`, users of
+`r share_top$service_name_en` signed in most often:
+**`r percent(share_top$dau_mau_ratio, accuracy = 1)`** of them on a typical
+day, or about `r round(share_top$active_days_per_user)` days each. Users of
+the `r share_bottom$service_name_en` signed in least often:
+**`r percent(share_bottom$dau_mau_ratio, accuracy = 1)`**, or about
+`r round(share_bottom$active_days_per_user)` days each. Both are ATIP
+services: staff who process requests use the Management Tools as part of
+their job, while Canadians use the Request Service to file a request, often
+just once. This measure will help us estimate support demand when large new
+programs join CanadaLogin.
+
+```{r share-of-monthly-users}
+#| fig-height: 4.2
+#| fig-alt: |
+#|   Dot chart of the daily share of monthly users for each public
+#|   application in October 2026, with earlier months as grey dots. ATIP
+#|   Online Management Tools, used by staff, is highest at 15%, about 5 days a
+#|   month, and ATIP Online Request Service, used by the public, is lowest at
+#|   6%, about 2 days. The axis starts at 3%, the lowest possible value,
+#|   where every user signs in on one day a month.
+share_order <- share_latest$label[order(share_latest$dau_mau_ratio)]
+
+# Each label sits past its row's furthest dot, so it never covers one.
+share_text <- monthly_share |>
+  group_by(label) |>
+  summarise(x = max(dau_mau_ratio), .groups = "drop") |>
+  inner_join(share_latest, by = "label")
+
+share_plot <- ggplot(mapping = aes(dau_mau_ratio, label)) +
+  geom_point(data = share_earlier, colour = colors$greyscale[4], size = 2) +
+  geom_point(data = share_latest, colour = colors$brand["blue"], size = 3.2) +
+  geom_text(
+    data = share_text,
+    aes(x = x, label = paste0(percent(dau_mau_ratio, accuracy = 1), " (",
+                              round(active_days_per_user, 1), " days)")),
+    hjust = -0.2, size = 3.2
+  ) +
+  # Starts at the floor, not zero: no application can score below it.
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1),
+    breaks = c(share_floor, seq(0.05, 0.15, by = 0.05)),
+    limits = c(share_floor, NA), expand = expansion(mult = c(0, 0.25))
+  ) +
+  # Fixed order: layers would otherwise set it by which draws first.
+  scale_y_discrete(limits = share_order) +
+  theme_cds() +
+  theme(panel.grid.major.y = element_blank()) +
+  labs(
+    x = "Daily share of monthly users", y = NULL,
+    title = "Users of work tools and repeat services sign in most often",
+    subtitle = paste0(
+      format(latest_month, "%B %Y"), " (blue, days per user) and earlier ",
+      "months (grey)."
+    )
+  )
+
+# Taller figure, so the logo height fraction is scaled to match the others.
+add_cds_logo(
+  add_watermark(share_plot, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 4.2
+)
+```
+
+*Missed the previous edition? [Signal Check
+#`r params$edition - 1`](`r published_url("20261019_signal-check.html")`) is
+a two-minute read.*
+
+{{< include _footer.qmd >}}
+
+{{< include _analytics.qmd >}}
+
+{{< include _render-info.qmd >}}
