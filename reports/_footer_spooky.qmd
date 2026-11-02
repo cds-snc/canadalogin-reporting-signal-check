@@ -17,6 +17,7 @@ for (footer_env_path in c(".env", "../.env", "../../.env")) {
 
 - **CanadaLogin dashboards**
     - **Sign-In Activity dashboard** ([dashboard](`r published_url("ibm-verify.html")`) | [code](https://github.com/cds-snc/canadalogin-reporting-dashboards/tree/main/dashboards/ibm-verify)) - covers users and sign-in events.
+    - **Experience Monitoring dashboard** ([dashboard](`r published_url("experience-monitoring.html")`) | [code](https://github.com/cds-snc/canadalogin-reporting-dashboards/tree/main/dashboards/experience-monitoring)) - covers task success.
     - **Support dashboard** ([dashboard](`r published_url("support.html")`) | [code](https://github.com/cds-snc/canadalogin-reporting-dashboards/tree/main/dashboards/support)) - covers call centre volume and partner support.
     - **Readership dashboard** ([dashboard](`r published_url("readership.html")`) | [code](https://github.com/cds-snc/canadalogin-reporting-dashboards/tree/main/dashboards/readership)) - covers who reads our reporting products and how.
 - **CanadaLogin Metrics Cookbook** ([website](https://cds-snc.github.io/canadalogin-metrics-cookbook/) | [repo](https://github.com/cds-snc/canadalogin-metrics-cookbook)) - how each metric is defined and calculated, and what data is available.
