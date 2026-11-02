@@ -261,14 +261,14 @@ share_floor <- 1 / unique(share_latest$days_in_month)
 ```
 
 This is the **CanadaLogin Signal Check**, where we tell you what's
-interesting in CanadaLogin reporting this week. This edition covers three things: the services and departments now
+interesting in CanadaLogin reporting this week. This edition covers three things: the online services and departments now
 using CanadaLogin, how to keep up to date with task success metrics, and how
 frequently a user of a given online service signs in.
 
-**CanadaLogin now serves `r partners_now[["services"]]` public services from
-`r partners_now[["departments"]]` departments and agencies.** Two services
+**CanadaLogin now serves `r partners_now[["services"]]` online services from
+`r partners_now[["departments"]]` departments and agencies.** Two online services
 joined in the last two weeks: the `r newcomers$service_name[1]` on
-`r format_long_date(newcomers$launch_date[1])` and
+`r format_long_date(newcomers$launch_date[1])` and the
 `r newcomers$service_name[2]` on
 `r format_long_date(newcomers$launch_date[2])`. Both are just starting,
 with only a handful of users so far. Users kept growing too: CanadaLogin had
@@ -278,10 +278,10 @@ joined in the last two weeks.
 
 ```{r partner-growth}
 #| fig-alt: |
-#|   Step chart from April to November 1, 2026, of public services on
+#|   Step chart from April to November 1, 2026, of online services on
 #|   CanadaLogin (blue) and the departments and agencies behind them (green).
-#|   Both start at 1 in April. By November 1 there are 11 services from 9
-#|   departments and agencies, with two services added in the last two weeks.
+#|   Both start at 1 in April. By November 1 there are 11 online services from 9
+#|   departments and agencies, with two online services added in the last two weeks.
 partner_long <- partner_growth |>
   tidyr::pivot_longer(c(services, departments), names_to = "measure") |>
   # Departments draw last, so the green line shows where the two overlap.
@@ -292,7 +292,7 @@ partner_colours <- c(
   departments = unname(colors$brand["green"])
 )
 partner_labels <- c(
-  services = "public services",
+  services = "online services",
   departments = "departments and agencies"
 )
 
@@ -329,9 +329,9 @@ partner_plot <- ggplot(partner_long, aes(day, value, colour = measure)) +
   theme_cds() +
   labs(
     x = NULL, y = "On CanadaLogin",
-    title = "More services, and more departments, are joining CanadaLogin",
+    title = "More online services, and more departments, are joining CanadaLogin",
     subtitle = paste0(
-      "Public services and the departments and agencies that run them, by ",
+      "Online services and the departments and agencies that run them, by ",
       "launch date."
     )
   )
@@ -465,7 +465,7 @@ day, or about `r round(share_top$active_days_per_user)` days each. Users of
 the `r share_bottom$service_name_en` signed in least often:
 **`r percent(share_bottom$dau_mau_ratio, accuracy = 1)`**, or about
 `r round(share_bottom$active_days_per_user)` days each. Both are ATIP
-services: staff who process requests use the Management Tools as part of
+online services: staff who process requests use the Management Tools as part of
 their job, while Canadians use the Request Service to file a request, often
 just once. This measure will help us estimate support demand when large new
 programs join CanadaLogin.
@@ -499,7 +499,7 @@ share_plot <- ggplot(mapping = aes(dau_mau_ratio, label)) +
   # Starts at the floor, not zero: no application can score below it.
   scale_x_continuous(
     labels = label_percent(accuracy = 1),
-    breaks = c(share_floor, seq(0.05, 0.15, by = 0.05)),
+    breaks = c(share_floor, seq(0.05, 0.15, by = 0.05)), minor_breaks = NULL,
     limits = c(share_floor, NA), expand = expansion(mult = c(0, 0.25))
   ) +
   # Fixed order: layers would otherwise set it by which draws first.
@@ -508,7 +508,7 @@ share_plot <- ggplot(mapping = aes(dau_mau_ratio, label)) +
   theme(panel.grid.major.y = element_blank()) +
   labs(
     x = "Daily share of monthly users", y = NULL,
-    title = "Users of work tools and repeat services sign in most often",
+    title = "Users of work tools and repeat online services sign in most often",
     subtitle = paste0(
       format(latest_month, "%B %Y"), " (blue, days per user) and earlier ",
       "months (grey)."
