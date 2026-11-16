@@ -1,8 +1,6 @@
 # CanadaLogin Signal Check N
 
-For the two-week period of Month D to D.
-
-Do not post the report link here. Share the preview on Slack and tag the reviewers.
+For the two-week period of Month D through D.
 
 ## This edition
 
@@ -10,32 +8,14 @@ Do not post the report link here. Share the preview on Slack and tag the reviewe
 2. Figure 2:
 3. Figure 3:
 
-## For reviewers
-
-<!-- Anything to weigh: anomalies raised with the team, caveats, departures
-from a cookbook recipe, partner-sensitive wording. Write "None" if none. -->
-
 ## Author checklist
 
-Data
-
 - [ ] Preflight in `explore.qmd` passes for this period
-- [ ] Every causal claim is checked against the per-application breakdown
-- [ ] Each metric follows its cookbook recipe, or the departure is noted above
-
-Writing
-
 - [ ] Each paragraph opens with a bolded takeaway and bolds one or two numbers
 - [ ] Every number in the prose is an inline expression
 - [ ] The closing line links the previous edition
-
-Figures
-
 - [ ] Alt text numbers match the latest render
 - [ ] Axes start at zero, or the figure says why not
-
-Render
-
 - [ ] `lintr` is clean
 - [ ] Footer archive links are filled in (they come from `.env`)
 - [ ] Preview is published and loads, and the link is shared on Slack

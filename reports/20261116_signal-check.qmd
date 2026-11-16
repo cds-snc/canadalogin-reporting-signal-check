@@ -1,0 +1,495 @@
+---
+title: "CanadaLogin Signal Check"
+subtitle: "For the two-week period of November 2 to 15"
+author: "EDCP Data and Research Team"  # colin.douglas@cds-snc.ca
+date: "2026-11-16"
+params:
+  edition: 11
+format:
+  html:
+    embed-resources: true
+    theme: [cosmo, _fonts.scss]   # _fonts.scss: self-hosted brand fonts
+    toc: false
+    fig-width: 8
+    fig-height: 3.4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+# Queries are frozen to the November 2 - 15, 2026 period.
+source("../R/connection.R")
+source("../R/branding.R")
+source("../R/colours.R")
+source("../R/publishing.R")
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(dbplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(scales)
+})
+
+con <- connect_athena()
+
+# Watermark date: the date this report is first created.
+report_date <- as.Date("2026-11-16")
+
+period_start <- as.Date("2026-11-02")
+period_end <- as.Date("2026-11-15")
+
+# Monday of the launch week; the service went live Apr 22.
+series_start <- as.Date("2026-04-20")
+
+# Figure 3 reads the weekdays of the last four weeks.
+load_start <- as.Date("2026-10-19")
+
+# Remembrance Day, a federal holiday, so not a typical weekday. It also had an
+# unusual share of failed authentications.
+remembrance_day <- as.Date("2026-11-11")
+
+prev_start <- period_start - 14
+prev_end <- period_start - 1
+
+# An event's time as an Eastern Time timestamp. `time` is a UTC string.
+et_time <- sql(paste(
+  "with_timezone(CAST(substr(time, 1, 19) AS timestamp), 'UTC')",
+  "AT TIME ZONE 'America/Toronto'"
+))
+
+# The relying-party registry, one row per application name. Several names map to
+# one service, so aggregate after joining this.
+relying_parties <- load_relying_parties(con) |>
+  distinct(application_name, service_name, is_internal, launch_date) |>
+  mutate(launch_date = as.Date(launch_date))
+
+# Figure 1 --------------------------------------------------------------------
+#
+# Weekly SSO events by public service, per the cookbook's sign-ins-by-application
+# recipe. The period's four busiest are named; the rest are one grey band.
+app_daily <- tbl(
+  con, in_schema("ibm_verify_events_transformed", "events_app_login_counts")
+) |>
+  filter(
+    as.Date(from_date) >= series_start, as.Date(from_date) <= period_end
+  ) |>
+  group_by(application_name, day = as.Date(from_date)) |>
+  summarise(sso_events = sum(total_logins, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(day = as.Date(day), sso_events = as.double(sso_events)) |>
+  # A name with no registry row keeps its own name rather than dropping out.
+  left_join(relying_parties, by = "application_name") |>
+  filter(!coalesce(is_internal, FALSE)) |>
+  mutate(service_name = coalesce(service_name, application_name))
+
+period_ranking <- app_daily |>
+  filter(day >= period_start, day <= period_end) |>
+  group_by(service_name) |>
+  summarise(sso_events = sum(sso_events), .groups = "drop") |>
+  arrange(desc(sso_events))
+
+highlighted <- head(period_ranking$service_name, 4)
+
+weekly_sso <- app_daily |>
+  mutate(
+    week_end = monday_of(day) + 6,
+    service_group = if_else(
+      service_name %in% highlighted, service_name, "Other services"
+    )
+  ) |>
+  group_by(week_end, service_group) |>
+  summarise(sso_events = sum(sso_events), .groups = "drop") |>
+  # The first level stacks on top, so the grey band caps each bar.
+  mutate(service_group = factor(
+    service_group, levels = c("Other services", rev(highlighted))
+  ))
+
+period_sso <- sum(period_ranking$sso_events)
+prev_sso <- app_daily |>
+  filter(day >= prev_start, day <= prev_end) |>
+  summarise(n = sum(sso_events)) |>
+  pull(n)
+
+public_service_count <- relying_parties |>
+  filter(!is_internal, launch_date <= period_end) |>
+  distinct(service_name) |>
+  nrow()
+
+top_share <- period_ranking$sso_events[1] / period_sso
+second_share <- period_ranking$sso_events[2] / period_sso
+
+# Figure 2 --------------------------------------------------------------------
+#
+# Share of users who have signed in to two or more public services since launch.
+# Counted by service, so MyCGC's two applications count once; pre-launch testing is out.
+public_aliases <- tbl(con, in_schema("rp", "alias")) |>
+  inner_join(tbl(con, in_schema("rp", "service")), by = "rp_id") |>
+  filter(!is_internal) |>
+  distinct(applicationname = alias, service_name = service_name_en, launch_date)
+
+first_use <- tbl(con, in_schema("ibm_verify_events_raw", "application_usage")) |>
+  filter(
+    result == "success",
+    !is.na(userid), userid != "", userid != "UNKNOWN"
+  ) |>
+  mutate(et_day = sql(paste0("date(", et_time, ")"))) |>
+  filter(et_day <= period_end) |>
+  inner_join(public_aliases, by = "applicationname") |>
+  filter(et_day >= as.Date(launch_date)) |>
+  group_by(userid, service_name) |>
+  summarise(first_day = min(et_day, na.rm = TRUE), .groups = "drop") |>
+  collect() |>
+  mutate(first_day = as.Date(first_day))
+
+# The day each user first reached one public service, and a second one.
+user_reach <- first_use |>
+  group_by(userid) |>
+  arrange(first_day, .by_group = TRUE) |>
+  summarise(
+    services = n(),
+    first_service_day = first(first_day),
+    second_service_day = nth(first_day, 2),
+    .groups = "drop"
+  )
+
+reach_weeks <- tibble(week_end = seq(series_start + 6, period_end, by = "week"))
+reach_weekly <- reach_weeks |>
+  rowwise() |>
+  mutate(
+    users = sum(user_reach$first_service_day <= week_end),
+    multi_users = sum(user_reach$second_service_day <= week_end, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  mutate(multi_share = multi_users / users)
+
+reach_latest <- slice_max(reach_weekly, week_end, n = 1)
+
+# ATIP's two services joined on the same day, the start of the steep climb.
+atip_launch <- relying_parties |>
+  filter(!is_internal, startsWith(service_name, "ATIP")) |>
+  pull(launch_date) |>
+  min()
+
+# The most common pair of services among users who reached two or more.
+service_combos <- first_use |>
+  filter(userid %in% user_reach$userid[user_reach$services >= 2]) |>
+  group_by(userid) |>
+  summarise(
+    combo = paste(sort(service_name), collapse = " + "), .groups = "drop"
+  ) |>
+  count(combo, sort = TRUE)
+
+# Figure 3 --------------------------------------------------------------------
+#
+# Every IBM Verify event, all four raw tables, per second per 1,000 DAU in 15-minute
+# ET bins. The Nov 4-6 surge of resent SMS OTP codes stays in, as real load.
+load_days <- seq(load_start, period_end, by = "day")
+load_days <- load_days[
+  as.integer(format(load_days, "%u")) <= 5L & load_days != remembrance_day
+]
+
+# Partitions are UTC days, so read the day after the window for the ET evening.
+raw_events <- function(table) {
+  tbl(con, in_schema("ibm_verify_events_raw", table)) |>
+    filter(
+      .data$year == "2026",
+      (.data$month == "10" & .data$day >= "19") |
+        (.data$month == "11" & .data$day <= "16")
+    ) |>
+    mutate(et_ts = et_time) |>
+    # hour() and minute() are Athena functions, passed through to SQL.
+    mutate(
+      et_day = as.Date(.data$et_ts),
+      et_hour = hour(.data$et_ts), # nolint: object_usage_linter.
+      et_minute = minute(.data$et_ts) # nolint: object_usage_linter.
+    ) |>
+    filter(.data$et_day %in% load_days)
+}
+
+event_tables <- c(
+  "authentication_activity", "mfa_activity", "application_usage",
+  "adaptive_access"
+)
+
+load_bins <- bind_rows(lapply(event_tables, \(table) {
+  raw_events(table) |>
+    mutate(bin = et_hour * 4L + floor(et_minute / 15L)) |>
+    count(et_day, bin) |>
+    collect()
+})) |>
+  mutate(et_day = as.Date(et_day), bin = as.integer(bin), n = as.double(n))
+
+load_dau <- raw_events("authentication_activity") |>
+  filter(!is.na(subject), subject != "", subject != "UNKNOWN") |>
+  group_by(et_day) |>
+  summarise(dau = n_distinct(subject), .groups = "drop") |>
+  collect() |>
+  mutate(et_day = as.Date(et_day), dau = as.double(dau))
+
+bin_seconds <- 15 * 60
+
+# Each day's rate per bin, every bin present so quiet ones count as zero.
+load_daily <- load_bins |>
+  group_by(et_day, bin) |>
+  summarise(events = sum(n), .groups = "drop") |>
+  complete(et_day, bin = 0:95, fill = list(events = 0)) |>
+  inner_join(load_dau, by = "et_day") |>
+  mutate(
+    hour = bin / 4,
+    rate = events / bin_seconds / dau * 1000
+  )
+
+load_typical <- load_daily |>
+  group_by(hour) |>
+  summarise(rate = median(rate), .groups = "drop")
+
+load_peak <- slice_max(load_typical, rate, n = 1, with_ties = FALSE)
+
+# The median weekday also has a smaller late-morning peak.
+morning_peak <- load_typical |>
+  filter(hour >= 9, hour < 12) |>
+  slice_max(rate, n = 1, with_ties = FALSE)
+peak_labels <- bind_rows(morning_peak, load_peak)
+
+# Events per DAU on the median weekday.
+events_per_dau <- load_daily |>
+  group_by(et_day) |>
+  summarise(per_dau = sum(events) / first(dau), .groups = "drop") |>
+  summarise(m = median(per_dau)) |>
+  pull(m)
+
+# A clock time as it reads in prose, "10:15 a.m."
+format_clock <- function(hour) {
+  h <- floor(hour)
+  m <- round((hour - h) * 60)
+  suffix <- if_else(h < 12, "a.m.", "p.m.")
+  h12 <- if_else(h %% 12 == 0, 12, h %% 12)
+  paste0(h12, ":", sprintf("%02d", m), " ", suffix)
+}
+```
+
+Welcome to **CanadaLogin Signal Check**, a biweekly non-technical read on
+CanadaLogin activity. This edition covers three topics: which online services
+are driving CanadaLogin's traffic, how many users have used CanadaLogin to sign
+in to more than one service, and when CanadaLogin is the busiest.
+
+**ATIP's request service and GC Digital Talent carry most of CanadaLogin's
+traffic.** Of the `r comma(period_sso)` SSO events in the last two weeks,
+each one a signed-in user reaching an online service, the ATIP Online Request
+Service had **`r percent(top_share, accuracy = 1)`** and GC Digital Talent
+**`r percent(second_share, accuracy = 1)`**. The other
+`r public_service_count - 2` online services shared the rest. Total traffic
+held steady, against `r comma(prev_sso)` in the two weeks before.
+
+```{r sso-by-service}
+#| fig-height: 4.4
+#| fig-alt: |
+#|   Stacked bar chart of weekly SSO events by online service from the April
+#|   2026 launch to November 15. Volume grows from June and jumps when ATIP
+#|   joins in September. The last two weeks, shaded, hold steady at about
+#|   16,000 a week. The ATIP Online Request Service is more than half of each
+#|   of those bars, and GC Digital Talent the next largest.
+# One colour per service, matching earlier editions.
+service_colours <- c(
+  "ATIP Online Request Service" = unname(colors$brand["orange"]),
+  "GC Digital Talent" = unname(colors$brand["blue"]),
+  "ATIP Online Management Tools" = unname(colors$brand["yellow"]),
+  "IRIS" = unname(colors$brand["forest"]),
+  "Other services" = unname(colors$greyscale[3])
+)
+
+# Shades the two period bars, each 6 days wide around its Sunday.
+sso_plot <- ggplot(weekly_sso, aes(week_end, sso_events, fill = service_group)) +
+  annotate(
+    "rect", xmin = period_start + 2.5, xmax = period_end + 3.5,
+    ymin = -Inf, ymax = Inf, fill = colors$greyscale[5]
+  ) +
+  geom_col(width = 6) +
+  scale_fill_manual(
+    values = service_colours,
+    breaks = c(highlighted, "Other services"),
+    name = NULL
+  ) +
+  scale_y_continuous(
+    labels = comma, limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.06))
+  ) +
+  scale_x_date(
+    breaks = seq(series_start + 6, period_end, by = "week"),
+    date_labels = "%b %d"
+  ) +
+  theme_cds() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom",
+    legend.justification = "left",
+    panel.grid.major.x = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 2)) +
+  labs(
+    x = NULL, y = "SSO events in the week",
+    title = "Most traffic goes to ATIP's request service and GC Digital Talent",
+    subtitle = "SSO events per week by online service since the April 2026 launch."
+  )
+
+# Taller figure, so the logo height fraction is scaled to match the others.
+add_cds_logo(
+  add_watermark(sso_plot, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 4.4
+)
+```
+
+**About 1 in 100 users has used CanadaLogin for more than one service.** One
+account for many services is one of CanadaLogin's main benefits to users, and
+we have tried to measure it before. Until now, CanadaLogin's own internal
+components, like the Manage and Migration apps, clouded the count. The new IBM
+Verify event stream records every event rather than daily totals, so we can
+now leave them out. Of the **`r comma(reach_latest$users)`** users who have
+used CanadaLogin to sign in to an online service,
+**`r comma(reach_latest$multi_users)`** have signed in to two or more. That
+share has grown steadily since ATIP joined on `r format_long_date(atip_launch)`,
+and the most common pair is ATIP's two services, at
+`r service_combos$n[1]` users.
+
+```{r multi-service-users}
+#| fig-alt: |
+#|   Line chart of the share of users who have used CanadaLogin to sign in to
+#|   two or more online services since launch, by week from April to November
+#|   15, 2026. It stays under 0.2% until ATIP joins on September 2, then climbs
+#|   steadily to 1.1%.
+reach_plot <- ggplot(reach_weekly, aes(week_end, multi_share)) +
+  geom_line(colour = colors$brand["blue"], linewidth = 1) +
+  geom_point(data = reach_latest, colour = colors$brand["red"], size = 3) +
+  geom_text(
+    data = reach_latest,
+    aes(label = percent(multi_share, accuracy = 0.1)),
+    colour = colors$brand["red"], vjust = -1, fontface = "bold", size = 3.6
+  ) +
+  geom_vline(
+    xintercept = atip_launch, linetype = "dashed", colour = "grey45",
+    linewidth = 0.4
+  ) +
+  annotate(
+    "text", x = atip_launch + 2, y = Inf, hjust = 0, vjust = 1.5, size = 3.2,
+    colour = "grey30",
+    label = paste0("ATIP joins, ", format_long_date(atip_launch))
+  ) +
+  scale_y_continuous(
+    labels = label_percent(accuracy = 0.1), limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_x_date(
+    breaks = seq(series_start + 6, period_end, by = "week"),
+    date_labels = "%b %d"
+  ) +
+  theme_cds() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = NULL, y = "Share of users",
+    title = "About 1 in 100 users has used CanadaLogin for two or more services",
+    subtitle = paste0(
+      "Share of users who have signed in to two or more online services ",
+      "since launch."
+    )
+  )
+
+add_cds_logo(add_watermark(reach_plot, date = report_date,
+                           edition = params$edition))
+```
+
+**CanadaLogin is busiest from mid-morning to mid-afternoon.** On a median
+weekday, activity peaks around `r format_clock(morning_peak$hour)` and again
+at `r format_clock(load_peak$hour)`, Eastern time
+([America/Toronto](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
+The higher peak reaches
+**`r number(load_peak$rate, accuracy = 0.01)` events per second for every
+1,000 daily active users**. That ratio lets us plan for growth: a service
+that brings 10,000 daily users would add about
+`r number(load_peak$rate * 10, accuracy = 0.1)` events per second at the peak.
+Events here count everything IBM Verify records: sign-ins, MFA codes, SSO
+events and risk checks, including internal use. A typical user creates about
+`r round(events_per_dau)` a day. These are events, not the "transactions" IBM
+uses to measure service capacity, and each event produces multiple
+transactions.
+
+```{r load-by-time-of-day}
+#| fig-height: 3.8
+#| fig-alt: |
+#|   Line chart of IBM Verify events per second per 1,000 daily active users
+#|   by time of day, Eastern time, for each weekday of the past month (grey)
+#|   and the median weekday (blue). The median rises from 7 a.m., peaks at 0.31
+#|   at 10:45 a.m. and at 0.32 at 1:30 p.m. Two grey days spike near 6 a.m.
+#|   during a surge of SMS codes.
+hour_breaks <- seq(0, 24, by = 3)
+hour_labels <- c(
+  "12 a.m.", "3 a.m.", "6 a.m.", "9 a.m.", "12 p.m.", "3 p.m.", "6 p.m.",
+  "9 p.m.", "12 a.m."
+)
+
+# Just above the grey days through the working day.
+peak_label_y <- max(load_daily$rate[load_daily$hour >= 9 & load_daily$hour < 16]) *
+  1.1
+
+# Each 15-minute bin is drawn at its midpoint.
+load_plot <- ggplot(load_daily, aes(hour + 0.125, rate)) +
+  geom_line(
+    aes(group = et_day),
+    colour = colors$greyscale[4], linewidth = 0.3, alpha = 0.8
+  ) +
+  geom_line(
+    data = load_typical, colour = colors$brand["blue"], linewidth = 1.1
+  ) +
+  # Labels sit above the grey days on leaders, morning left and afternoon right.
+  geom_segment(
+    data = peak_labels,
+    aes(x = hour + 0.125, xend = hour + 0.125, y = rate, yend = peak_label_y),
+    colour = colors$brand["red"], linewidth = 0.4
+  ) +
+  # Semi-transparent, so the median line shows through.
+  geom_point(
+    data = peak_labels, colour = colors$brand["red"], size = 3, alpha = 0.45
+  ) +
+  geom_text(
+    data = peak_labels,
+    aes(
+      y = peak_label_y,
+      label = paste0(format_clock(hour), ": ", number(rate, accuracy = 0.01)),
+      hjust = c(1.05, -0.05)
+    ),
+    colour = colors$brand["red"], fontface = "bold", size = 3.4
+  ) +
+  scale_x_continuous(
+    breaks = hour_breaks, labels = hour_labels, limits = c(0, 24),
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.08))) +
+  theme_cds() +
+  # Room on the right for the last "12 a.m." label.
+  theme(plot.margin = margin(5.5, 16, 5.5, 5.5)) +
+  labs(
+    x = "Time of day (ET)", y = "Events per second\nper 1,000 DAU",
+    title = "CanadaLogin is busiest from mid-morning to mid-afternoon",
+    subtitle = paste0(
+      "IBM Verify events. Median weekday (blue) and each weekday of the past ",
+      "month (grey)."
+    )
+  )
+
+# Taller figure, so the logo height fraction is scaled to match the others.
+add_cds_logo(
+  add_watermark(load_plot, date = report_date, edition = params$edition),
+  height = 0.13 * 3.4 / 3.8
+)
+```
+
+*Missed the previous edition? [Signal Check
+#`r params$edition - 1`](`r published_url("20261102_signal-check.html")`) is
+a two-minute read.*
+
+{{< include _footer.qmd >}}
+
+{{< include _analytics.qmd >}}
+
+{{< include _render-info.qmd >}}

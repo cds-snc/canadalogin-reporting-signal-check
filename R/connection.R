@@ -12,12 +12,12 @@
 #' Pipeline of use:
 #'   1. check_packages()  - fail early with an install hint if deps are missing
 #'   2. load .env         - read AWS profile / region / staging dir
-#'   3. connect_athena()  - open the RAthena connection
+#'   3. connect_athena()  - open the noctua connection
 
 # Packages -------------------------------------------------------------------
 
 required_packages <- c(
-  "DBI", "RAthena", "dplyr", "dbplyr", "stringr", "tidyr", "lubridate",
+  "DBI", "noctua", "dplyr", "dbplyr", "stringr", "tidyr", "lubridate",
   "ggplot2", "scales", "cowplot", "magick", "dotenv", "ggbrick",
   "glue", "readr", "purrr", "gt", "patchwork"
 )
@@ -94,9 +94,9 @@ load_config <- function() {
 connect_athena <- function() {
   check_packages()
   load_config()
-  RAthena::RAthena_options(verbose = FALSE)
+  noctua::noctua_options(verbose = FALSE)
   DBI::dbConnect(
-    RAthena::athena(),
+    noctua::athena(),
     profile_name   = Sys.getenv("AWS_PROFILE"),
     region_name    = Sys.getenv("AWS_REGION", "ca-central-1"),
     s3_staging_dir = Sys.getenv("ATHENA_S3_STAGING_DIR")
