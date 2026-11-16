@@ -270,8 +270,10 @@ format_clock <- function(hour) {
 }
 ```
 
-Welcome to **CanadaLogin Signal Check**, a biweekly non-technical read on CanadaLogin
-activity. This edition covers three topics: which online services are driving CanadaLogin's traffic, how many users have used CanadaLogin to sign in to more than one service, and when CanadaLogin is the busiest.
+Welcome to **CanadaLogin Signal Check**, a biweekly non-technical read on
+CanadaLogin activity. This edition covers three topics: which online services
+are driving CanadaLogin's traffic, how many users have used CanadaLogin to sign
+in to more than one service, and when CanadaLogin is the busiest.
 
 **ATIP's request service and GC Digital Talent carry most of CanadaLogin's
 traffic.** Of the `r comma(period_sso)` SSO events in the last two weeks,
@@ -388,8 +390,8 @@ reach_plot <- ggplot(reach_weekly, aes(week_end, multi_share)) +
     x = NULL, y = "Share of users",
     title = "About 1 in 100 users has used CanadaLogin for two or more services",
     subtitle = paste0(
-      "Users who have used CanadaLogin to sign in to two or more online ",
-      "services since launch,\nof users who have signed in to at least one."
+      "Share of users who have signed in to two or more online services ",
+      "since launch."
     )
   )
 
@@ -399,7 +401,9 @@ add_cds_logo(add_watermark(reach_plot, date = report_date,
 
 **CanadaLogin is busiest from mid-morning to mid-afternoon.** On a median
 weekday, activity peaks around `r format_clock(morning_peak$hour)` and again
-at `r format_clock(load_peak$hour)`, Eastern time ([America/Toronto](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)). The higher peak reaches
+at `r format_clock(load_peak$hour)`, Eastern time
+([America/Toronto](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
+The higher peak reaches
 **`r number(load_peak$rate, accuracy = 0.01)` events per second for every
 1,000 daily active users**. That ratio lets us plan for growth: a service
 that brings 10,000 daily users would add about
@@ -407,7 +411,8 @@ that brings 10,000 daily users would add about
 Events here count everything IBM Verify records: sign-ins, MFA codes, SSO
 events and risk checks, including internal use. A typical user creates about
 `r round(events_per_dau)` a day. These are events, not the "transactions" IBM
-uses to measure service capacity, and each event likely produces multiple transactions.
+uses to measure service capacity, and each event produces multiple
+transactions.
 
 ```{r load-by-time-of-day}
 #| fig-height: 3.8
